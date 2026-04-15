@@ -1,7 +1,11 @@
 import os
+from pathlib import Path
 from dotenv import load_dotenv
 
 load_dotenv()
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 def env_bool(name: str, default: bool = False) -> bool:
@@ -30,8 +34,11 @@ APP_NAME = os.getenv("APP_NAME", "profeta")
 ENV = os.getenv("ENV", "dev")
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 
+DEFAULT_DATABASE_PATH = (PROJECT_ROOT / "data" / "profeta.db").resolve()
+DEFAULT_DATABASE_URL = f"sqlite+aiosqlite:///{DEFAULT_DATABASE_PATH.as_posix()}"
+
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite+aiosqlite:///./data/profeta.db")
+DATABASE_URL = os.getenv("DATABASE_URL", DEFAULT_DATABASE_URL)
 
 # 🔥 ASAAS
 ASAAS_API_KEY = os.getenv("ASAAS_API_KEY", "")

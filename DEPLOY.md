@@ -25,6 +25,13 @@ pip install -r requirements.txt
 cp .env.example .env
 ```
 
+Alternativa com script de bootstrap (recomendado):
+
+```bash
+chmod +x scripts/bootstrap_vps.sh
+./scripts/bootstrap_vps.sh
+```
+
 ## Variáveis obrigatórias para produção
 
 - `ENV=prod`
@@ -33,6 +40,22 @@ cp .env.example .env
 - `DATABASE_URL`
 - `PUBLIC_BASE_URL`
 - `ASAAS_WEBHOOK_TOKEN`
+
+Variáveis recomendadas:
+
+- `ASAAS_PAYMENT_LINK_ID`
+- `ASAAS_PAYMENT_LINK_URL`
+- `OPENAI_API_KEY`
+- `LOG_LEVEL=INFO`
+
+## Preflight antes de subir
+
+```bash
+source .venv/bin/activate
+python scripts/preflight_check.py
+```
+
+Em `ENV=prod`, o comando deve terminar com `preflight.status OK`.
 
 ## Subir manualmente
 
@@ -73,15 +96,29 @@ Exemplos em:
 
 - [deploy/systemd/profeta-api.service](deploy/systemd/profeta-api.service)
 - [deploy/systemd/profeta-bot.service](deploy/systemd/profeta-bot.service)
+- [deploy/systemd/profeta-job.service](deploy/systemd/profeta-job.service)
+- [deploy/systemd/profeta-job.timer](deploy/systemd/profeta-job.timer)
 
 Instalação típica:
 
 ```bash
 sudo cp deploy/systemd/profeta-api.service /etc/systemd/system/
 sudo cp deploy/systemd/profeta-bot.service /etc/systemd/system/
+sudo cp deploy/systemd/profeta-job.service /etc/systemd/system/
+sudo cp deploy/systemd/profeta-job.timer /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now profeta-api
 sudo systemctl enable --now profeta-bot
+sudo systemctl enable --now profeta-job.timer
+```
+
+Validação de sintaxe das units:
+
+```bash
+sudo systemd-analyze verify /etc/systemd/system/profeta-api.service
+sudo systemd-analyze verify /etc/systemd/system/profeta-bot.service
+sudo systemd-analyze verify /etc/systemd/system/profeta-job.service
+sudo systemd-analyze verify /etc/systemd/system/profeta-job.timer
 ```
 
 ## Restart automático
@@ -107,6 +144,13 @@ Bot:
 journalctl -u profeta-bot -f
 ```
 
+Job diário:
+
+```bash
+journalctl -u profeta-job -f
+systemctl list-timers | grep profeta-job
+```
+
 Checagens rápidas:
 
 1. `systemctl status profeta-api`
@@ -123,6 +167,60 @@ git pull --ff-only
 source .venv/bin/activate
 pip install -r requirements.txt
 pytest -q
+sudo systemctl restart profeta-api
+sudo systemctl restart profeta-bot
+sudo systemctl restart profeta-job.timer
+```
+
+## Smoke deploy (procedimento mínimo)
+
+1. Preflight:
+
+```bash
+source .venv/bin/activate
+python scripts/preflight_check.py
+```
+
+2. Subir serviços:
+
+```bash
+sudo systemctl restart profeta-api
+sudo systemctl restart profeta-bot
+```
+
+3. Validar API:
+
+```bash
+curl -sS http://127.0.0.1:8000/health
+```
+
+4. Validar status:
+
+```bash
+systemctl status profeta-api --no-pager
+systemctl status profeta-bot --no-pager
+```
+
+5. Validar logs de startup:
+
+```bash
+journalctl -u profeta-api -n 100 --no-pager
+journalctl -u profeta-bot -n 100 --no-pager
+```
+
+6. Validar fluxo mínimo do produto:
+
+- no Telegram, enviar `/start` e `/versiculo`
+- confirmar ausência de crash no `journalctl`
+
+## Rollback simples
+
+```bash
+cd /opt/profeta/current
+git log --oneline -n 5
+git checkout <commit-anterior-estável>
+source .venv/bin/activate
+pip install -r requirements.txt
 sudo systemctl restart profeta-api
 sudo systemctl restart profeta-bot
 ```

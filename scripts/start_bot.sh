@@ -5,6 +5,9 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VENV_DIR="${VENV_DIR:-$ROOT_DIR/.venv}"
 
 cd "$ROOT_DIR"
+
+mkdir -p "$ROOT_DIR/logs" "$ROOT_DIR/data" "$ROOT_DIR/data/audio" "$ROOT_DIR/data/audio_cache"
+
 source "$VENV_DIR/bin/activate"
 
 exec python -m app.bot

@@ -1,14 +1,23 @@
 [Unit]
 Description=Profeta Telegram Bot
-After=network.target
+After=network-online.target
+Wants=network-online.target
 
 [Service]
 Type=simple
+User=profeta
+Group=profeta
 WorkingDirectory=/opt/profeta/current
 EnvironmentFile=/opt/profeta/current/.env
-ExecStart=/opt/profeta/current/scripts/start_bot.sh
+Environment=PYTHONUNBUFFERED=1
+RuntimeDirectory=profeta
+ExecStart=/bin/bash /opt/profeta/current/scripts/start_bot.sh
+ExecStop=/bin/kill -s TERM $MAINPID
 Restart=always
 RestartSec=5
+TimeoutStartSec=45
+TimeoutStopSec=30
+KillSignal=SIGINT
 
 [Install]
 WantedBy=multi-user.target
