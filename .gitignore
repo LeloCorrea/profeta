@@ -1,0 +1,8 @@
+# Secrets and local environments
+.env
+.env.*
+!.env.example
+
+# Python virtual environments
+.venv/
+venv/
