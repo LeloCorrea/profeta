@@ -1,7 +1,7 @@
 import asyncio
 import json
 from dataclasses import asdict, dataclass
-from typing import Any
+from typing import Any, Optional
 
 from app.config import OPENAI_EXPLANATION_MODEL
 from app.observability import get_logger, log_event
@@ -16,7 +16,7 @@ except Exception:
 logger = get_logger(__name__)
 
 
-@dataclass(slots=True)
+@dataclass
 class ReflectionContent:
     explanation: str
     context: str
@@ -87,7 +87,7 @@ def _fallback_reflection(verse: dict[str, Any], depth: str) -> ReflectionContent
     )
 
 
-def _build_prompt(verse: dict[str, Any], depth: str, journey_title: str | None = None) -> str:
+def _build_prompt(verse: dict[str, Any], depth: str, journey_title: Optional[str] = None) -> str:
     journey_context = ""
     if journey_title:
         journey_context = f"A pessoa está em uma jornada espiritual com foco em {journey_title}. "
@@ -107,7 +107,7 @@ def _build_prompt(verse: dict[str, Any], depth: str, journey_title: str | None =
 async def generate_reflection_content(
     verse: dict[str, Any],
     depth: str = "balanced",
-    journey_title: str | None = None,
+    journey_title: Optional[str] = None,
 ) -> ReflectionContent:
     if OpenAI is None:
         raise RuntimeError("Pacote openai não está disponível.")
@@ -157,7 +157,7 @@ async def generate_reflection_content(
 def render_reflection_message(
     verse: dict[str, Any],
     reflection: ReflectionContent,
-    journey_title: str | None = None,
+    journey_title: Optional[str] = None,
 ) -> str:
     journey_line = f"Trilha ativa: {journey_title}\n\n" if journey_title else ""
     return (
@@ -170,7 +170,7 @@ def render_reflection_message(
     )
 
 
-def render_prayer_message(verse: dict[str, Any], prayer: str, journey_title: str | None = None) -> str:
+def render_prayer_message(verse: dict[str, Any], prayer: str, journey_title: Optional[str] = None) -> str:
     journey_line = f"Trilha ativa: {journey_title}\n\n" if journey_title else ""
     return (
         f"🙏 Oração a partir de {format_verse_reference(verse)}\n\n"

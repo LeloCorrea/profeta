@@ -1,4 +1,5 @@
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+from typing import Optional
 
 from app.config import FEATURE_FAVORITES, FEATURE_INLINE_ACTIONS, FEATURE_JOURNEYS
 
@@ -114,7 +115,7 @@ def build_favorites_message(items: list[str]) -> str:
     return f"⭐ Seus favoritos mais recentes\n\n{rendered}"
 
 
-def build_verse_actions_keyboard() -> InlineKeyboardMarkup | None:
+def build_verse_actions_keyboard() -> Optional[InlineKeyboardMarkup]:
     if not FEATURE_INLINE_ACTIONS:
         return None
 
@@ -140,7 +141,7 @@ def build_verse_actions_keyboard() -> InlineKeyboardMarkup | None:
     return InlineKeyboardMarkup(rows)
 
 
-def build_reflection_actions_keyboard() -> InlineKeyboardMarkup | None:
+def build_reflection_actions_keyboard() -> Optional[InlineKeyboardMarkup]:
     if not FEATURE_INLINE_ACTIONS:
         return None
 
@@ -158,7 +159,7 @@ def build_reflection_actions_keyboard() -> InlineKeyboardMarkup | None:
     return InlineKeyboardMarkup(rows)
 
 
-def build_prayer_actions_keyboard() -> InlineKeyboardMarkup | None:
+def build_prayer_actions_keyboard() -> Optional[InlineKeyboardMarkup]:
     if not FEATURE_INLINE_ACTIONS:
         return None
 
@@ -167,7 +168,7 @@ def build_prayer_actions_keyboard() -> InlineKeyboardMarkup | None:
     )
 
 
-def build_journey_keyboard(journeys: list[object]) -> InlineKeyboardMarkup | None:
+def build_journey_keyboard(journeys: list[object]) -> Optional[InlineKeyboardMarkup]:
     if not FEATURE_INLINE_ACTIONS:
         return None
 

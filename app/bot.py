@@ -1,6 +1,6 @@
 import inspect
 import logging
-from typing import Any
+from typing import Any, Optional
 
 from telegram import InputFile, Update
 from telegram.constants import ChatAction
@@ -117,14 +117,14 @@ def remember_last_reflection(context: ContextTypes.DEFAULT_TYPE, reflection: Ref
     context.user_data["last_reflection"] = reflection.as_dict()
 
 
-def get_cached_reflection(context: ContextTypes.DEFAULT_TYPE) -> ReflectionContent | None:
+def get_cached_reflection(context: ContextTypes.DEFAULT_TYPE) -> Optional[ReflectionContent]:
     payload = context.user_data.get("last_reflection")
     if not isinstance(payload, dict):
         return None
     return ReflectionContent.from_dict(payload)
 
 
-async def resolve_last_verse(update: Update, context: ContextTypes.DEFAULT_TYPE) -> dict[str, Any] | None:
+async def resolve_last_verse(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Optional[dict[str, Any]]:
     cached = context.user_data.get("last_verse")
     if isinstance(cached, dict):
         return cached
@@ -194,7 +194,7 @@ async def send_audio_asset(
     *,
     title: str,
     performer: str,
-    caption: str | None = None,
+    caption: Optional[str] = None,
 ) -> None:
     with asset.path.open("rb") as file_handle:
         telegram_file = InputFile(file_handle, filename=asset.path.name)
@@ -245,7 +245,7 @@ async def send_reflection_audio(message, verse: dict[str, Any], reflection: Refl
 async def send_verse_flow(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
-    verse: dict[str, Any] | None = None,
+    verse: Optional[dict[str, Any]] = None,
 ) -> None:
     message = get_message(update)
     user = get_user(update)

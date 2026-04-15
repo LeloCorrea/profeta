@@ -1,4 +1,5 @@
 import os
+from typing import Optional
 
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -38,7 +39,7 @@ async def health():
 @app.post("/webhooks/asaas")
 async def asaas_webhook(
     request: Request,
-    asaas_access_token: str | None = Header(default=None),
+    asaas_access_token: Optional[str] = Header(default=None),
 ):
     # 🔒 1. Segurança do webhook
     if not ASAAS_WEBHOOK_TOKEN:

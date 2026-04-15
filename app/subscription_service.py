@@ -1,4 +1,5 @@
 from sqlalchemy import select
+from typing import Optional, Union
 
 from app.db import SessionLocal
 from app.models import User, Subscription
@@ -8,7 +9,11 @@ from app.observability import get_logger, log_event
 logger = get_logger(__name__)
 
 
-async def get_or_create_user(telegram_user_id: str, telegram_username: str | None = None, full_name: str | None = None) -> User:
+async def get_or_create_user(
+    telegram_user_id: str,
+    telegram_username: Optional[str] = None,
+    full_name: Optional[str] = None,
+) -> User:
     async with SessionLocal() as session:
         stmt = select(User).where(User.telegram_user_id == telegram_user_id)
         result = await session.execute(stmt)
@@ -32,8 +37,8 @@ async def get_or_create_user(telegram_user_id: str, telegram_username: str | Non
 
 
 async def activate_subscription_for_user(
-    user_id: int | str | None = None,
-    telegram_user_id: str | None = None,
+    user_id: Optional[Union[int, str]] = None,
+    telegram_user_id: Optional[str] = None,
 ) -> Subscription:
     async with SessionLocal() as session:
         user = None

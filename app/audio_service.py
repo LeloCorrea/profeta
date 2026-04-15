@@ -3,6 +3,7 @@ import re
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Optional
 
 import edge_tts
 
@@ -17,12 +18,12 @@ AUDIO_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 logger = get_logger(__name__)
 
 
-@dataclass(slots=True)
+@dataclass
 class AudioAsset:
     key: str
     path: Path
     cache_hit: bool
-    telegram_file_id: str | None = None
+    telegram_file_id: Optional[str] = None
 
 
 def build_audio_filename(text: str) -> str:

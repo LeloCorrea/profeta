@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Optional
 
 from sqlalchemy import select
 
@@ -10,7 +11,7 @@ from app.models import User, UserJourney
 logger = get_logger(__name__)
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class JourneyDefinition:
     key: str
     title: str
@@ -117,17 +118,17 @@ def list_journeys() -> list[JourneyDefinition]:
     return list(JOURNEYS.values())
 
 
-def get_journey(key: str) -> JourneyDefinition | None:
+def get_journey(key: str) -> Optional[JourneyDefinition]:
     return JOURNEYS.get(key)
 
 
-def build_journey_catalog_message(active_title: str | None = None) -> str:
+def build_journey_catalog_message(active_title: Optional[str] = None) -> str:
     active_line = f"Trilha ativa: {active_title}\n\n" if active_title else ""
     items = "\n".join(f"• {journey.title}: {journey.summary}" for journey in list_journeys())
     return f"🛤️ Trilhas do Profeta\n\n{active_line}{items}"
 
 
-async def start_journey(session_factory, telegram_user_id: str, journey_key: str) -> JourneyDefinition | None:
+async def start_journey(session_factory, telegram_user_id: str, journey_key: str) -> Optional[JourneyDefinition]:
     journey = get_journey(journey_key)
     if not journey:
         return None
@@ -162,7 +163,7 @@ async def start_journey(session_factory, telegram_user_id: str, journey_key: str
     return journey
 
 
-async def get_active_journey(session_factory, telegram_user_id: str) -> JourneyDefinition | None:
+async def get_active_journey(session_factory, telegram_user_id: str) -> Optional[JourneyDefinition]:
     async with session_factory() as session:
         user = await session.scalar(select(User).where(User.telegram_user_id == str(telegram_user_id)))
         if not user:
@@ -180,7 +181,7 @@ async def get_active_journey(session_factory, telegram_user_id: str) -> JourneyD
     return get_journey(row.journey_key)
 
 
-async def build_active_journey_touchpoint(session_factory, telegram_user_id: str) -> str | None:
+async def build_active_journey_touchpoint(session_factory, telegram_user_id: str) -> Optional[str]:
     async with session_factory() as session:
         user = await session.scalar(select(User).where(User.telegram_user_id == str(telegram_user_id)))
         if not user:

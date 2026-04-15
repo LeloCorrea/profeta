@@ -2,7 +2,7 @@ import json
 import random
 from functools import lru_cache
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 from sqlalchemy import func, select
 
@@ -67,7 +67,7 @@ def format_verse_reference(verse: dict[str, Any]) -> str:
     return f"{verse['book']} {verse['chapter']}:{verse['verse']}"
 
 
-def format_verse_text(verse: dict[str, Any], journey_title: str | None = None) -> str:
+def format_verse_text(verse: dict[str, Any], journey_title: Optional[str] = None) -> str:
     journey_line = f"Trilha ativa: {journey_title}\n\n" if journey_title else ""
     return (
         f"📖 {format_verse_reference(verse)}\n\n"
@@ -101,8 +101,8 @@ async def get_recent_verse_refs_for_user(
 
 
 async def get_random_verse_from_db(
-    excluded_refs: set[tuple[str, str, str]] | None = None,
-) -> dict[str, Any] | None:
+    excluded_refs: Optional[set[tuple[str, str, str]]] = None,
+) -> Optional[dict[str, Any]]:
     excluded_refs = excluded_refs or set()
 
     async with SessionLocal() as session:
@@ -143,8 +143,8 @@ async def get_random_verse_from_db(
 
 
 def get_random_verse_from_json(
-    excluded_refs: set[tuple[str, str, str]] | None = None,
-) -> dict[str, Any] | None:
+    excluded_refs: Optional[set[tuple[str, str, str]]] = None,
+) -> Optional[dict[str, Any]]:
     excluded_refs = excluded_refs or set()
     verses = [normalize_verse(item) for item in load_verses()]
     if not verses:
@@ -156,7 +156,7 @@ def get_random_verse_from_json(
     return verse
 
 
-async def get_random_verse_for_user(telegram_user_id: str) -> dict[str, Any] | None:
+async def get_random_verse_for_user(telegram_user_id: str) -> Optional[dict[str, Any]]:
     recent_refs = await get_recent_verse_refs_for_user(telegram_user_id)
     verse = await get_random_verse_from_db(recent_refs)
     if verse:
@@ -185,7 +185,7 @@ async def save_verse_history(telegram_user_id: str, verse: dict[str, Any]) -> No
     )
 
 
-async def get_last_verse_for_user(telegram_user_id: str) -> dict[str, Any] | None:
+async def get_last_verse_for_user(telegram_user_id: str) -> Optional[dict[str, Any]]:
     async with SessionLocal() as session:
         stmt = (
             select(VerseHistory)

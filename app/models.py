@@ -1,6 +1,7 @@
 from sqlalchemy import String, DateTime, ForeignKey
 from sqlalchemy.orm import Mapped, mapped_column
 from datetime import datetime
+from typing import Optional
 from app.db import Base
 from sqlalchemy import Integer, Text, UniqueConstraint
 
@@ -10,8 +11,8 @@ class User(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     telegram_user_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
-    telegram_username: Mapped[str | None] = mapped_column(String(128), nullable=True)
-    full_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    telegram_username: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    full_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     status: Mapped[str] = mapped_column(String(32), default="inactive")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
@@ -21,11 +22,11 @@ class UserPreference(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), unique=True, index=True)
-    preferred_hour: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    favorite_themes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    preferred_hour: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    favorite_themes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     explanation_depth: Mapped[str] = mapped_column(String(32), default="balanced")
     preferred_delivery: Mapped[str] = mapped_column(String(32), default="text_audio")
-    last_requested_theme: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    last_requested_theme: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime,
@@ -50,7 +51,7 @@ class Subscription(Base):
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
     plan_name: Mapped[str] = mapped_column(String(64), default="monthly")
     status: Mapped[str] = mapped_column(String(32), default="inactive")
-    paid_until: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    paid_until: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 class VerseHistory(Base):
@@ -70,7 +71,7 @@ class FavoriteVerse(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
-    verse_id: Mapped[int | None] = mapped_column(ForeignKey("verses.id"), nullable=True)
+    verse_id: Mapped[Optional[int]] = mapped_column(ForeignKey("verses.id"), nullable=True)
     book: Mapped[str] = mapped_column(String(128))
     chapter: Mapped[str] = mapped_column(String(32))
     verse: Mapped[str] = mapped_column(String(32))
@@ -86,12 +87,12 @@ class ActivationToken(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     token: Mapped[str] = mapped_column(String(128), unique=True, index=True)
-    telegram_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    telegram_user_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     status: Mapped[str] = mapped_column(String(32), default="pending")
-    asaas_payment_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    asaas_customer_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    asaas_payment_link_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    used_at: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    asaas_payment_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    asaas_customer_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    asaas_payment_link_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    used_at: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 class Payment(Base):
@@ -100,10 +101,10 @@ class Payment(Base):
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     provider: Mapped[str] = mapped_column(String(32), default="asaas")
     provider_payment_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
-    payment_link_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    status: Mapped[str | None] = mapped_column(String(32), nullable=True)
-    amount: Mapped[str | None] = mapped_column(String(32), nullable=True)
-    customer_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    payment_link_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    status: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    amount: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    customer_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 class Verse(Base):
@@ -145,7 +146,7 @@ class UserJourney(Base):
     journey_key: Mapped[str] = mapped_column(String(64), index=True)
     status: Mapped[str] = mapped_column(String(32), default="active")
     current_step: Mapped[int] = mapped_column(Integer, default=0)
-    last_touchpoint_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_touchpoint_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime,
