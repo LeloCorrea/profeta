@@ -1,9 +1,11 @@
 import os
+from contextlib import asynccontextmanager
 from typing import Optional
 
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
+from app.config import APP_NAME, ASAAS_WEBHOOK_TOKEN, BOT_USERNAME, ENV, PUBLIC_BASE_URL, is_production_environment, missing_settings
 from app.db import engine, Base
 import app.models  # noqa: F401
 from app.observability import get_logger, log_event
@@ -14,26 +16,46 @@ from app.payment_service import (
     payment_link_matches,
 )
 
-app = FastAPI(title="Profeta API")
-
-ASAAS_WEBHOOK_TOKEN = os.getenv("ASAAS_WEBHOOK_TOKEN", "")
 logger = get_logger(__name__)
 
 
-@app.on_event("startup")
-async def on_startup():
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    missing = []
+    if is_production_environment():
+        missing = missing_settings("ASAAS_WEBHOOK_TOKEN", "PUBLIC_BASE_URL", "BOT_USERNAME")
+        if missing:
+            raise RuntimeError(f"Configuração obrigatória ausente para produção: {', '.join(missing)}")
+
+    log_event(
+        logger,
+        "api_starting",
+        app_name=APP_NAME,
+        env=ENV,
+        bot_username=BOT_USERNAME,
+        public_base_url=PUBLIC_BASE_URL,
+        missing_settings=", ".join(missing),
+    )
+
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+
+    yield
+
+    log_event(logger, "api_stopped", app_name=APP_NAME, env=ENV)
+
+
+app = FastAPI(title="Profeta API", lifespan=lifespan)
 
 
 @app.get("/")
 async def root():
-    return {"ok": True, "app": "profeta"}
+    return {"ok": True, "app": APP_NAME, "env": ENV}
 
 
 @app.get("/health")
 async def health():
-    return {"status": "healthy"}
+    return {"status": "healthy", "app": APP_NAME, "env": ENV}
 
 
 @app.post("/webhooks/asaas")

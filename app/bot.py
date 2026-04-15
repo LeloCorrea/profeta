@@ -9,12 +9,16 @@ from telegram.ext import Application, CallbackQueryHandler, CommandHandler, Cont
 
 from app.audio_service import AudioAsset, ensure_named_audio_asset
 from app.config import (
+    APP_NAME,
     ASAAS_PAYMENT_LINK_URL,
     BOT_USERNAME,
+    ENV,
     FEATURE_FAVORITES,
     FEATURE_JOURNEYS,
     LOG_LEVEL,
     TELEGRAM_BOT_TOKEN,
+    is_production_environment,
+    missing_settings,
 )
 from app.content_service import (
     ReflectionContent,
@@ -93,6 +97,16 @@ def setup_logging() -> None:
         level=getattr(logging, LOG_LEVEL, logging.INFO),
         format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
     )
+
+
+def validate_bot_runtime() -> None:
+    missing = missing_settings("TELEGRAM_BOT_TOKEN")
+    if missing:
+        raise RuntimeError(f"Configuração obrigatória ausente para o bot: {', '.join(missing)}")
+
+    optional_missing = missing_settings("BOT_USERNAME")
+    if optional_missing and is_production_environment():
+        logger.warning("BOT_USERNAME ausente em produção; links de ativação podem ficar incompletos.")
 
 
 async def maybe_await(value: Any) -> Any:
@@ -577,6 +591,9 @@ async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 def main() -> None:
     setup_logging()
+    validate_bot_runtime()
+
+    log_event(logger, "bot_starting", app_name=APP_NAME, env=ENV, bot_username=BOT_USERNAME)
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
 
     application.add_handler(CommandHandler("start", start))
@@ -601,6 +618,8 @@ def main() -> None:
         logger.error("Não foi possível iniciar: já existe outra instância consumindo updates deste bot.")
     except TelegramError:
         logger.exception("Falha do Telegram ao iniciar o bot.")
+    finally:
+        log_event(logger, "bot_stopped", app_name=APP_NAME, env=ENV, bot_username=BOT_USERNAME)
 
 
 if __name__ == "__main__":

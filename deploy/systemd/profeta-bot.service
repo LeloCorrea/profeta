@@ -1,0 +1,14 @@
+[Unit]
+Description=Profeta Telegram Bot
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/profeta/current
+EnvironmentFile=/opt/profeta/current/.env
+ExecStart=/opt/profeta/current/scripts/start_bot.sh
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

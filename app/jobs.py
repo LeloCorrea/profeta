@@ -7,7 +7,7 @@ from pathlib import Path
 from telegram import Bot
 from sqlalchemy import select
 
-from app.config import TELEGRAM_BOT_TOKEN
+from app.config import APP_NAME, ENV, TELEGRAM_BOT_TOKEN, missing_settings
 from app.db import SessionLocal
 from app.models import User, Subscription, VerseHistory
 from app.audio_service import generate_tts_audio
@@ -24,6 +24,7 @@ def setup_logger() -> logging.Logger:
 
     logger = logging.getLogger("daily_job")
     logger.setLevel(logging.INFO)
+    logger.propagate = False
 
     if not logger.handlers:
         file_handler = logging.FileHandler(LOG_FILE)
@@ -97,12 +98,18 @@ async def save_verse_history(user_id: str, verse: dict) -> None:
 
 async def main() -> None:
     logger = setup_logger()
+    missing = missing_settings("TELEGRAM_BOT_TOKEN")
+    if missing:
+        log_event(logger, "daily_job_configuration_error", level=logging.ERROR, missing_settings=", ".join(missing))
+        raise RuntimeError(f"Configuração obrigatória ausente para job diário: {', '.join(missing)}")
+
     logger.info("===== INÍCIO DO JOB DIÁRIO =====")
-    log_event(logger, "daily_job_started")
+    log_event(logger, "daily_job_started", app_name=APP_NAME, env=ENV)
 
     verses = load_verses()
     if not verses:
         logger.error("Nenhum versículo encontrado.")
+        log_event(logger, "daily_job_aborted", level=logging.ERROR, reason="no_verses_available")
         return
 
     user_ids = await get_active_user_ids()

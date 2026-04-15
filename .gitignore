@@ -20,9 +20,13 @@ __pycache__/
 *.sqlite3
 
 # Local runtime data and logs
+data/audio/
 data/audio_cache/
 logs/
 *.log
+.pytest_cache/
+.coverage
+htmlcov/
 
 # Temporary files
 *.pid

@@ -1,0 +1,14 @@
+[Unit]
+Description=Profeta API
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/profeta/current
+EnvironmentFile=/opt/profeta/current/.env
+ExecStart=/opt/profeta/current/scripts/start_api.sh
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

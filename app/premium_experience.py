@@ -25,7 +25,8 @@ def build_welcome_message() -> str:
         "Aqui você recebe Palavra, reflexão e áudio com um tom sereno e cuidadoso.\n\n"
         "Use /versiculo para começar sua jornada de hoje.\n"
         "Use /explicar para aprofundar o último versículo.\n"
-        "Use /assinar para ativar ou renovar seu acesso premium."
+        "Use /assinar para ativar ou renovar seu acesso premium.\n"
+        "Se quiser ver tudo com calma, use /ajuda."
     )
 
 
@@ -49,7 +50,8 @@ def build_help_message() -> str:
 def build_subscription_required_message() -> str:
     return (
         "✨ Seu acesso premium ainda não está ativo.\n\n"
-        "Quando desejar, use /assinar para liberar versículos, reflexões em áudio e jornadas guiadas."
+        "Quando desejar, use /assinar para liberar versículos, reflexões em áudio e jornadas guiadas.\n"
+        "Assim que ativar, volte com /versiculo e eu sigo com você."
     )
 
 
@@ -64,7 +66,7 @@ def build_subscription_message(payment_link_url: str) -> str:
 def build_activation_success_message() -> str:
     return (
         "✅ Seu acesso foi ativado com sucesso.\n\n"
-        "Você já pode receber um versículo com /versiculo e aprofundar com /explicar."
+        "Você já pode receber um versículo com /versiculo, aprofundar com /explicar e retomar seu ritmo espiritual com /continuar."
     )
 
 
@@ -76,7 +78,7 @@ def build_activation_error_message() -> str:
 
 
 def build_no_history_message() -> str:
-    return "Ainda não encontrei um versículo no seu histórico. Comece com /versiculo."
+    return "Ainda não encontrei um versículo no seu histórico. Comece com /versiculo e, depois disso, eu sigo com /explicar, /orar e /favoritar."
 
 
 def build_verse_unavailable_message() -> str:
@@ -86,16 +88,16 @@ def build_verse_unavailable_message() -> str:
 def build_reflection_unavailable_message() -> str:
     return (
         "⚠️ Sua reflexão não pôde ser preparada agora.\n\n"
-        "Tente novamente em alguns instantes. Seu último versículo continua salvo para você."
+        "Tente novamente em alguns instantes. Seu último versículo continua salvo para você, então basta repetir /explicar quando quiser."
     )
 
 
 def build_audio_unavailable_message() -> str:
-    return "⚠️ O texto foi enviado, mas o áudio não ficou pronto desta vez."
+    return "⚠️ O texto foi enviado, mas o áudio não ficou pronto desta vez. Se desejar, tente novamente em instantes sem perder seu conteúdo."
 
 
 def build_prayer_unavailable_message() -> str:
-    return "⚠️ Ainda não encontrei um versículo recente para transformar em oração. Use /versiculo primeiro."
+    return "⚠️ Ainda não encontrei um versículo recente para transformar em oração. Use /versiculo primeiro e, em seguida, eu preparo a oração para você."
 
 
 def build_favorite_added_message(reference: str) -> str:
@@ -107,7 +109,7 @@ def build_favorite_exists_message(reference: str) -> str:
 
 
 def build_favorites_empty_message() -> str:
-    return "Seus favoritos ainda estão vazios. Quando desejar, salve um versículo com /favoritar."
+    return "Seus favoritos ainda estão vazios. Quando um versículo tocar seu coração, use /favoritar e eu guardo para você."
 
 
 def build_favorites_message(items: list[str]) -> str:
