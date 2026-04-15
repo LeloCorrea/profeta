@@ -11,6 +11,7 @@ from app.config import TELEGRAM_BOT_TOKEN
 from app.db import SessionLocal
 from app.models import User, Subscription, VerseHistory
 from app.audio_service import generate_tts_audio
+from app.observability import log_event
 
 BIBLE_PATH = Path("data/bible/bible.json")
 LOGS_DIR = Path("logs")
@@ -97,6 +98,7 @@ async def save_verse_history(user_id: str, verse: dict) -> None:
 async def main() -> None:
     logger = setup_logger()
     logger.info("===== INÍCIO DO JOB DIÁRIO =====")
+    log_event(logger, "daily_job_started")
 
     verses = load_verses()
     if not verses:
@@ -105,6 +107,7 @@ async def main() -> None:
 
     user_ids = await get_active_user_ids()
     logger.info(f"Usuários ativos encontrados: {len(user_ids)}")
+    log_event(logger, "daily_job_active_users_loaded", active_user_count=len(user_ids))
 
     if not user_ids:
         return
@@ -128,6 +131,12 @@ async def main() -> None:
             logger.info(
                 f"Preparando envio | telegram_user_id={user_id} | verse={verse['book']} {verse['chapter']}:{verse['verse']}"
             )
+            log_event(
+                logger,
+                "daily_verse_send_started",
+                telegram_user_id=user_id,
+                verse_reference=f"{verse['book']} {verse['chapter']}:{verse['verse']}",
+            )
 
             # TEXTO PARA ÁUDIO
             tts_text = (
@@ -135,7 +144,7 @@ async def main() -> None:
                 f"capítulo {verse['chapter']}. "
                 f"versículo {verse['verse']}. "
                 f"{verse['text']}"
-	    )
+            )
 
             # GERA OU USA CACHE
             audio_path = await generate_tts_audio(tts_text)
@@ -156,14 +165,22 @@ async def main() -> None:
             logger.info(
                 f"Envio concluído | telegram_user_id={user_id} | verse={verse['book']} {verse['chapter']}:{verse['verse']}"
             )
+            log_event(
+                logger,
+                "daily_verse_send_completed",
+                telegram_user_id=user_id,
+                verse_reference=f"{verse['book']} {verse['chapter']}:{verse['verse']}",
+            )
 
             sent += 1
 
         except Exception as e:
             logger.error(f"Erro ao enviar para {user_id}: {e}")
+            log_event(logger, "daily_verse_send_failed", level=logging.ERROR, telegram_user_id=user_id, error=str(e))
             failed += 1
 
     logger.info(f"===== FIM DO JOB DIÁRIO | enviados={sent} | falhas={failed} =====")
+    log_event(logger, "daily_job_finished", sent=sent, failed=failed)
 
 
 if __name__ == "__main__":

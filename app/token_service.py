@@ -3,6 +3,10 @@ from sqlalchemy import select
 
 from app.db import SessionLocal
 from app.models import ActivationToken
+from app.observability import get_logger, log_event
+
+
+logger = get_logger(__name__)
 
 
 def generate_token_value() -> str:
@@ -20,6 +24,7 @@ async def create_activation_token() -> str:
         session.add(row)
         await session.commit()
 
+    log_event(logger, "activation_token_created")
     return token_value
 
 
@@ -46,4 +51,5 @@ async def consume_activation_token(token_value: str, telegram_user_id: str) -> b
         row.telegram_user_id = telegram_user_id
 
         await session.commit()
+        log_event(logger, "activation_token_consumed", telegram_user_id=telegram_user_id)
         return True

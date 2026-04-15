@@ -1,56 +1,99 @@
-import asyncio
 import inspect
-import json
 import logging
-import os
-import random
-import re
-import shutil
-from functools import lru_cache
-from pathlib import Path
 from typing import Any
 
-from sqlalchemy import func, select
 from telegram import InputFile, Update
 from telegram.constants import ChatAction
 from telegram.error import Conflict, TelegramError
-from telegram.ext import Application, CommandHandler, ContextTypes
+from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes
 
-from app.audio_service import generate_tts_audio
-from app.config import ASAAS_PAYMENT_LINK_URL, BOT_USERNAME, TELEGRAM_BOT_TOKEN
+from app.audio_service import AudioAsset, ensure_named_audio_asset
+from app.config import (
+    ASAAS_PAYMENT_LINK_URL,
+    BOT_USERNAME,
+    FEATURE_FAVORITES,
+    FEATURE_JOURNEYS,
+    LOG_LEVEL,
+    TELEGRAM_BOT_TOKEN,
+)
+from app.content_service import (
+    ReflectionContent,
+    build_default_prayer,
+    build_explanation_audio_text,
+    generate_reflection_content,
+    render_prayer_message,
+    render_reflection_message,
+)
 from app.db import SessionLocal
-from app.models import Verse, VerseHistory
+from app.journey_service import (
+    JOURNEYS,
+    build_active_journey_touchpoint,
+    build_journey_catalog_message,
+    get_active_journey,
+    start_journey,
+)
+from app.observability import get_logger, log_event
+from app.premium_experience import (
+    ACTION_CONTINUE_JOURNEY,
+    ACTION_EXPLAIN,
+    ACTION_FAVORITE,
+    ACTION_HEAR_EXPLANATION,
+    ACTION_HEAR_VERSE,
+    ACTION_NEW_VERSE,
+    ACTION_PRAY,
+    ACTION_SHOW_JOURNEYS,
+    JOURNEY_ACTION_PREFIX,
+    build_activation_error_message,
+    build_activation_success_message,
+    build_audio_unavailable_message,
+    build_favorite_added_message,
+    build_favorite_exists_message,
+    build_favorites_empty_message,
+    build_favorites_message,
+    build_help_message,
+    build_journey_keyboard,
+    build_no_history_message,
+    build_prayer_actions_keyboard,
+    build_prayer_unavailable_message,
+    build_reflection_actions_keyboard,
+    build_reflection_unavailable_message,
+    build_subscription_message,
+    build_subscription_required_message,
+    build_verse_actions_keyboard,
+    build_verse_unavailable_message,
+    build_welcome_message,
+)
 from app.subscription_service import (
     activate_subscription_for_user,
     get_or_create_user,
     user_has_active_subscription,
 )
 from app.token_service import consume_activation_token, validate_activation_token
+from app.user_profile_service import (
+    add_favorite_verse,
+    get_user_explanation_depth,
+    list_recent_favorites,
+    record_theme_interest,
+)
+from app.verse_service import (
+    build_tts_text,
+    format_verse_reference,
+    format_verse_text,
+    get_last_verse_for_user,
+    get_random_verse_for_user,
+    save_verse_history,
+)
 
-try:
-    from openai import OpenAI
-except Exception:
-    OpenAI = None
 
-
-logger = logging.getLogger(__name__)
-
-BIBLE_PATH = Path("data/bible/bible.json")
-RECENT_VERSE_BLOCK_SIZE = 30
-DB_RANDOM_TRIES = 40
-OPENAI_EXPLANATION_MODEL = os.getenv("OPENAI_EXPLANATION_MODEL", "gpt-5.4")
+logger = get_logger(__name__)
 
 
 def setup_logging() -> None:
     logging.basicConfig(
-        level=logging.INFO,
+        level=getattr(logging, LOG_LEVEL, logging.INFO),
         format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
     )
 
-
-# =============================
-# GENERIC HELPERS
-# =============================
 
 async def maybe_await(value: Any) -> Any:
     if inspect.isawaitable(value):
@@ -58,216 +101,46 @@ async def maybe_await(value: Any) -> Any:
     return value
 
 
-def sanitize_filename(value: str) -> str:
-    cleaned = re.sub(r"[^a-zA-Z0-9_-]+", "_", value.strip())
-    return cleaned.strip("_") or "arquivo"
-
-def get_cache_audio_path(prefix: str, verse: dict[str, Any]) -> Path:
-    safe_book = sanitize_filename(str(verse["book"]))
-    chapter = str(verse["chapter"])
-    verse_number = str(verse["verse"])
-
-    filename = f"{prefix}_{safe_book}_{chapter}_{verse_number}.mp3"
-
-    return Path("data/audio_cache") / filename
-
-def normalize_verse(verse: Any) -> dict[str, Any]:
-    if isinstance(verse, dict):
-        return {
-            "id": verse.get("id"),
-            "book": str(verse.get("book", "")).strip(),
-            "chapter": str(verse.get("chapter", "")).strip(),
-            "verse": str(verse.get("verse", "")).strip(),
-            "text": str(verse.get("text", "")).strip(),
-        }
-
-    return {
-        "id": getattr(verse, "id", None),
-        "book": str(getattr(verse, "book", "")).strip(),
-        "chapter": str(getattr(verse, "chapter", "")).strip(),
-        "verse": str(getattr(verse, "verse", "")).strip(),
-        "text": str(getattr(verse, "text", "")).strip(),
-    }
+def get_message(update: Update):
+    return update.effective_message
 
 
-def verse_ref_tuple(verse: dict[str, Any]) -> tuple[str, str, str]:
-    return (
-        str(verse.get("book", "")).strip(),
-        str(verse.get("chapter", "")).strip(),
-        str(verse.get("verse", "")).strip(),
-    )
+def get_user(update: Update):
+    return update.effective_user
 
 
-def history_ref_tuple(item: Any) -> tuple[str, str, str]:
-    return (
-        str(getattr(item, "book", "")).strip(),
-        str(getattr(item, "chapter", "")).strip(),
-        str(getattr(item, "verse", "")).strip(),
-    )
+def remember_last_verse(context: ContextTypes.DEFAULT_TYPE, verse: dict[str, Any]) -> None:
+    context.user_data["last_verse"] = verse
 
 
-# =============================
-# FALLBACK JSON (SEGURANÇA)
-# =============================
-
-@lru_cache(maxsize=1)
-def load_verses() -> list[dict[str, Any]]:
-    if not BIBLE_PATH.exists():
-        return []
-
-    with open(BIBLE_PATH, "r", encoding="utf-8") as f:
-        data = json.load(f)
-
-    return data if isinstance(data, list) else []
+def remember_last_reflection(context: ContextTypes.DEFAULT_TYPE, reflection: ReflectionContent) -> None:
+    context.user_data["last_reflection"] = reflection.as_dict()
 
 
-# =============================
-# FORMATTERS
-# =============================
-
-def format_verse_reference(verse: dict[str, Any]) -> str:
-    return f"{verse['book']} {verse['chapter']}:{verse['verse']}"
-
-
-def format_verse_text(verse: dict[str, Any]) -> str:
-    return f"📖 {format_verse_reference(verse)}\n\n“{verse['text']}”"
-
-
-def build_tts_text(verse: dict[str, Any]) -> str:
-    return (
-        f"Versículo do dia. "
-        f"{verse['book']}, capítulo {verse['chapter']}, versículo {verse['verse']}. "
-        f"{verse['text']}"
-    )
-
-
-def build_explanation_tts_text(verse: dict[str, Any], explanation: str) -> str:
-    return (
-        f"Explicação do versículo. "
-        f"{verse['book']}, capítulo {verse['chapter']}, versículo {verse['verse']}. "
-        f"{explanation}"
-    )
-
-
-# =============================
-# DB VERSE SERVICE
-# =============================
-
-async def get_random_verse_from_db(
-    excluded_refs: set[tuple[str, str, str]] | None = None,
-) -> dict[str, Any] | None:
-    excluded_refs = excluded_refs or set()
-
-    async with SessionLocal() as session:
-        total_stmt = select(func.count()).select_from(Verse)
-        total = (await session.execute(total_stmt)).scalar_one_or_none() or 0
-
-        if total <= 0:
-            return None
-
-        for _ in range(min(DB_RANDOM_TRIES, total)):
-            offset = random.randint(0, total - 1)
-            stmt = select(Verse).offset(offset).limit(1)
-            verse_obj = (await session.execute(stmt)).scalar_one_or_none()
-
-            if not verse_obj:
-                continue
-
-            verse = normalize_verse(verse_obj)
-            if verse_ref_tuple(verse) not in excluded_refs:
-                return verse
-
-        stmt = select(Verse).limit(min(total, 500))
-        verses = [normalize_verse(v) for v in (await session.execute(stmt)).scalars().all()]
-        filtered = [v for v in verses if verse_ref_tuple(v) not in excluded_refs]
-
-        if filtered:
-            return random.choice(filtered)
-
-        if verses:
-            return random.choice(verses)
-
-    return None
-
-
-def get_random_verse_from_json(
-    excluded_refs: set[tuple[str, str, str]] | None = None,
-) -> dict[str, Any] | None:
-    excluded_refs = excluded_refs or set()
-    verses = [normalize_verse(v) for v in load_verses()]
-
-    if not verses:
+def get_cached_reflection(context: ContextTypes.DEFAULT_TYPE) -> ReflectionContent | None:
+    payload = context.user_data.get("last_reflection")
+    if not isinstance(payload, dict):
         return None
-
-    filtered = [v for v in verses if verse_ref_tuple(v) not in excluded_refs]
-    return random.choice(filtered or verses)
+    return ReflectionContent.from_dict(payload)
 
 
-# =============================
-# HISTORY
-# =============================
+async def resolve_last_verse(update: Update, context: ContextTypes.DEFAULT_TYPE) -> dict[str, Any] | None:
+    cached = context.user_data.get("last_verse")
+    if isinstance(cached, dict):
+        return cached
 
-async def save_verse_history(update: Update, verse: dict[str, Any]) -> None:
-    user = update.effective_user
-    if not user:
-        return
-
-    async with SessionLocal() as session:
-        session.add(
-            VerseHistory(
-                telegram_user_id=str(user.id),
-                book=str(verse["book"]),
-                chapter=str(verse["chapter"]),
-                verse=str(verse["verse"]),
-                text=str(verse["text"]),
-            )
-        )
-        await session.commit()
-
-
-async def get_last_verse_for_user(update: Update) -> dict[str, Any] | None:
-    user = update.effective_user
+    user = get_user(update)
     if not user:
         return None
 
-    async with SessionLocal() as session:
-        stmt = (
-            select(VerseHistory)
-            .where(VerseHistory.telegram_user_id == str(user.id))
-            .order_by(VerseHistory.id.desc())
-            .limit(1)
-        )
-        item = (await session.execute(stmt)).scalar_one_or_none()
+    verse = await get_last_verse_for_user(str(user.id))
+    if verse:
+        remember_last_verse(context, verse)
+    return verse
 
-    return normalize_verse(item) if item else None
-
-
-async def get_recent_verse_refs_for_user(
-    update: Update,
-    limit: int = RECENT_VERSE_BLOCK_SIZE,
-) -> set[tuple[str, str, str]]:
-    user = update.effective_user
-    if not user:
-        return set()
-
-    async with SessionLocal() as session:
-        stmt = (
-            select(VerseHistory)
-            .where(VerseHistory.telegram_user_id == str(user.id))
-            .order_by(VerseHistory.id.desc())
-            .limit(limit)
-        )
-        items = (await session.execute(stmt)).scalars().all()
-
-    return {history_ref_tuple(item) for item in items}
-
-
-# =============================
-# USER / SUBSCRIPTION
-# =============================
 
 async def ensure_user_record(update: Update) -> None:
-    user = update.effective_user
+    user = get_user(update)
     if not user:
         return
 
@@ -279,30 +152,14 @@ async def ensure_user_record(update: Update) -> None:
                 full_name=user.full_name,
             )
         )
-        return
-    except TypeError:
-        pass
+        await maybe_await(get_user_explanation_depth(SessionLocal, str(user.id)))
     except Exception:
-        logger.exception("Falha ao criar/obter usuário com assinatura completa.")
-
-    for args in (
-        (str(user.id), user.username, user.full_name),
-        (str(user.id), user.username),
-        (str(user.id),),
-    ):
-        try:
-            await maybe_await(get_or_create_user(*args))
-            return
-        except TypeError:
-            continue
-        except Exception:
-            logger.exception("Falha ao criar/obter usuário.")
-            return
+        logger.exception("Falha ao garantir registro do usuário.")
 
 
 async def require_active_subscription(update: Update) -> bool:
-    user = update.effective_user
-    message = update.message
+    message = get_message(update)
+    user = get_user(update)
 
     if not user or not message:
         return False
@@ -313,11 +170,9 @@ async def require_active_subscription(update: Update) -> bool:
         if await maybe_await(user_has_active_subscription(str(user.id))):
             return True
     except Exception:
-        logger.exception("Erro ao validar assinatura ativa do usuário %s.", user.id)
+        logger.exception("Erro ao validar assinatura ativa.")
 
-    await message.reply_text(
-        "⚠️ Seu acesso não está ativo.\n\n💳 Use /assinar para ativar."
-    )
+    await message.reply_text(build_subscription_required_message())
     return False
 
 
@@ -326,70 +181,23 @@ async def activate_user_from_token(user_id: str, token: str) -> None:
     if not validated:
         raise ValueError("Token inválido ou expirado.")
 
-    consumed = False
-
-    for call in (
-        lambda: consume_activation_token(token, user_id),
-        lambda: consume_activation_token(token=token, telegram_user_id=user_id),
-        lambda: consume_activation_token(token),
-    ):
-        try:
-            result = await maybe_await(call())
-            consumed = result is not False
-            break
-        except TypeError:
-            continue
-
+    consumed = await maybe_await(consume_activation_token(token, user_id))
     if not consumed:
         raise ValueError("Não foi possível consumir o token de ativação.")
 
-    for call in (
-        lambda: activate_subscription_for_user(user_id),
-        lambda: activate_subscription_for_user(telegram_user_id=user_id),
-        lambda: activate_subscription_for_user(user_id=user_id),
-    ):
-        try:
-            await maybe_await(call())
-            return
-        except TypeError:
-            continue
-
-    raise RuntimeError("Não foi possível ativar a assinatura do usuário.")
+    await maybe_await(activate_subscription_for_user(telegram_user_id=user_id))
 
 
-# =============================
-# CORE
-# =============================
-
-async def get_random_verse_for_user(update: Update) -> dict[str, Any] | None:
-    recent_refs = await get_recent_verse_refs_for_user(update)
-
-    verse = await get_random_verse_from_db(recent_refs)
-    if verse:
-        return verse
-
-    return get_random_verse_from_json(recent_refs)
-
-
-# =============================
-# AUDIO SEND HELPERS
-# =============================
-
-async def send_audio_file(
+async def send_audio_asset(
     message,
-    audio_path: str | Path,
+    asset: AudioAsset,
     *,
-    filename: str,
     title: str,
     performer: str,
     caption: str | None = None,
 ) -> None:
-    path = Path(audio_path)
-    if not path.exists():
-        raise FileNotFoundError(f"Áudio não encontrado: {path}")
-
-    with path.open("rb") as fh:
-        telegram_file = InputFile(fh, filename=filename)
+    with asset.path.open("rb") as file_handle:
+        telegram_file = InputFile(file_handle, filename=asset.path.name)
         await message.reply_audio(
             audio=telegram_file,
             title=title,
@@ -398,234 +206,196 @@ async def send_audio_file(
         )
 
 
-# =============================
-# VERSE SEND
-# =============================
-
-async def send_verse_text(update: Update, verse: dict[str, Any]) -> None:
-    message = update.message
-    if not message:
-        return
-
-    await message.reply_text(format_verse_text(verse))
-
-
-async def send_verse_audio(update: Update, verse: dict[str, Any]) -> None:
-    message = update.message
-    if not message:
-        return
-
-    cache_path = get_cache_audio_path("versiculo", verse)
-
-    # 🔁 CACHE HIT
-    if cache_path.exists():
-        with cache_path.open("rb") as f:
-            await message.reply_audio(
-                audio=InputFile(f, filename=cache_path.name),
-                title=f"Áudio de {verse['book']} {verse['chapter']}:{verse['verse']}",
-                performer="Profeta",
-            )
-        return
-
-    # 🧠 CACHE MISS → gera
-    tts_text = build_tts_text(verse)
-
-    audio_path = await generate_tts_audio(tts_text)
-
-    if not audio_path or not Path(audio_path).exists():
-        raise FileNotFoundError(f"Áudio não encontrado: {audio_path}")
-
-    # 💾 salva no cache
-    import shutil
-    shutil.copy(audio_path, cache_path)
-
-    # 📤 envia
-    with cache_path.open("rb") as f:
-        await message.reply_audio(
-            audio=InputFile(f, filename=cache_path.name),
-            title=f"Áudio de {verse['book']} {verse['chapter']}:{verse['verse']}",
-            performer="Profeta",
-        )
-
-async def send_verse_text_and_audio(update: Update, verse: dict[str, Any]) -> None:
-    await save_verse_history(update, verse)
-    await send_verse_text(update, verse)
-    await send_verse_audio(update, verse)
-
-
-# =============================
-# AI EXPLAIN
-# =============================
-
-def extract_response_text(response: Any) -> str:
-    text = getattr(response, "output_text", None)
-    if text:
-        return str(text).strip()
-
-    output = getattr(response, "output", None) or []
-    parts: list[str] = []
-
-    for item in output:
-        content = getattr(item, "content", None) or []
-        for block in content:
-            value = getattr(block, "text", None)
-            if value:
-                parts.append(str(value))
-
-    return "\n".join(parts).strip()
-
-
-async def generate_explanation_text(verse: dict[str, Any]) -> str:
-    if not os.getenv("OPENAI_API_KEY"):
-        raise RuntimeError("Configure OPENAI_API_KEY.")
-    if OpenAI is None:
-        raise RuntimeError("Pacote openai não está disponível.")
-
-    prompt = (
-        "Explique o versículo abaixo de forma simples, fiel ao texto bíblico, "
-        "em português do Brasil, em no máximo 8 linhas. "
-        "Evite inventar contexto não explícito. "
-        f"Versículo: {verse['book']} {verse['chapter']}:{verse['verse']} - {verse['text']}"
+async def send_verse_audio(message, verse: dict[str, Any]) -> None:
+    asset = await ensure_named_audio_asset("versiculo", verse, build_tts_text(verse))
+    await send_audio_asset(
+        message,
+        asset,
+        title=f"Áudio de {format_verse_reference(verse)}",
+        performer="Profeta",
+    )
+    log_event(
+        logger,
+        "verse_audio_sent",
+        verse_reference=format_verse_reference(verse),
+        cache_hit=asset.cache_hit,
     )
 
-    def _run() -> str:
-        client = OpenAI()
-        response = client.responses.create(
-            model=OPENAI_EXPLANATION_MODEL,
-            input=prompt,
-        )
-        return extract_response_text(response)
 
-    text = await asyncio.to_thread(_run)
-    if not text:
-        raise RuntimeError("A IA não retornou texto de explicação.")
+async def send_reflection_audio(message, verse: dict[str, Any], reflection: ReflectionContent) -> None:
+    asset = await ensure_named_audio_asset(
+        "explicacao",
+        verse,
+        build_explanation_audio_text(verse, reflection),
+    )
+    await send_audio_asset(
+        message,
+        asset,
+        title=f"Reflexão de {format_verse_reference(verse)}",
+        performer="Profeta",
+    )
+    log_event(
+        logger,
+        "reflection_audio_sent",
+        verse_reference=format_verse_reference(verse),
+        cache_hit=asset.cache_hit,
+    )
 
-    return text
 
-
-
-async def send_explanation_audio(
+async def send_verse_flow(
     update: Update,
-    verse: dict[str, Any],
-    explanation: str,
+    context: ContextTypes.DEFAULT_TYPE,
+    verse: dict[str, Any] | None = None,
 ) -> None:
-    message = update.message
-    if not message:
+    message = get_message(update)
+    user = get_user(update)
+    if not message or not user:
         return
 
-    cache_path = get_cache_audio_path("explicacao", verse)
-
-    # 🔁 CACHE HIT
-    if cache_path.exists():
-        with cache_path.open("rb") as f:
-            await message.reply_audio(
-                audio=InputFile(f, filename=cache_path.name),
-                title=f"Explicação de {verse['book']} {verse['chapter']}:{verse['verse']}",
-                performer="Profeta",
-            )
+    verse = verse or await get_random_verse_for_user(str(user.id))
+    if not verse:
+        await message.reply_text(build_verse_unavailable_message())
         return
 
-    # 🧠 CACHE MISS
-    audio_text = build_explanation_tts_text(verse, explanation)
+    active_journey = None
+    if FEATURE_JOURNEYS:
+        active_journey = await get_active_journey(SessionLocal, str(user.id))
 
-    audio_path = await generate_tts_audio(audio_text)
+    await save_verse_history(str(user.id), verse)
+    remember_last_verse(context, verse)
 
-    if not audio_path or not Path(audio_path).exists():
-        raise FileNotFoundError(f"Áudio não encontrado: {audio_path}")
+    await message.reply_text(
+        format_verse_text(verse, active_journey.title if active_journey else None),
+        reply_markup=build_verse_actions_keyboard(),
+    )
+    log_event(
+        logger,
+        "verse_sent",
+        telegram_user_id=user.id,
+        verse_reference=format_verse_reference(verse),
+        journey=active_journey.key if active_journey else "",
+    )
 
-    # 💾 salva no cache
-    import shutil
-    shutil.copy(audio_path, cache_path)
+    await send_verse_audio(message, verse)
 
-    # 📤 envia
-    with cache_path.open("rb") as f:
-        await message.reply_audio(
-            audio=InputFile(f, filename=cache_path.name),
-            title=f"Explicação de {verse['book']} {verse['chapter']}:{verse['verse']}",
-            performer="Profeta",
-        )
 
-# =============================
-# COMMANDS
-# =============================
+async def send_reflection_flow(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    message = get_message(update)
+    user = get_user(update)
+    if not message or not user:
+        return
+
+    verse = await resolve_last_verse(update, context)
+    if not verse:
+        await message.reply_text(build_no_history_message())
+        return
+
+    depth = await get_user_explanation_depth(SessionLocal, str(user.id))
+    active_journey = None
+    if FEATURE_JOURNEYS:
+        active_journey = await get_active_journey(SessionLocal, str(user.id))
+
+    reflection = await generate_reflection_content(
+        verse,
+        depth=depth,
+        journey_title=active_journey.title if active_journey else None,
+    )
+    remember_last_reflection(context, reflection)
+
+    await message.reply_text(
+        render_reflection_message(verse, reflection, active_journey.title if active_journey else None),
+        reply_markup=build_reflection_actions_keyboard(),
+    )
+    log_event(
+        logger,
+        "reflection_sent",
+        telegram_user_id=user.id,
+        verse_reference=format_verse_reference(verse),
+        depth=depth,
+    )
+
+    await send_reflection_audio(message, verse, reflection)
+
+
+async def send_prayer_flow(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    message = get_message(update)
+    user = get_user(update)
+    if not message or not user:
+        return
+
+    verse = await resolve_last_verse(update, context)
+    if not verse:
+        await message.reply_text(build_prayer_unavailable_message())
+        return
+
+    reflection = get_cached_reflection(context)
+    prayer = reflection.prayer if reflection and reflection.prayer else build_default_prayer(verse)
+
+    active_journey = None
+    if FEATURE_JOURNEYS:
+        active_journey = await get_active_journey(SessionLocal, str(user.id))
+
+    await message.reply_text(
+        render_prayer_message(verse, prayer, active_journey.title if active_journey else None),
+        reply_markup=build_prayer_actions_keyboard(),
+    )
+    log_event(
+        logger,
+        "prayer_sent",
+        telegram_user_id=user.id,
+        verse_reference=format_verse_reference(verse),
+    )
+
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    message = update.message
-    user = update.effective_user
-
+    message = get_message(update)
+    user = get_user(update)
     if not message or not user:
         return
 
     await ensure_user_record(update)
 
     token = context.args[0].strip() if context.args else None
-
     if token:
         try:
             await activate_user_from_token(str(user.id), token)
-            await message.reply_text(
-                "✅ Seu acesso foi ativado com sucesso.\n\n"
-                "Agora você já pode usar /versiculo e /explicar."
-            )
+            await message.reply_text(build_activation_success_message())
             return
-        except Exception as exc:
+        except Exception:
             logger.exception("Falha na ativação por token.")
-            await message.reply_text(
-                f"⚠️ Não foi possível ativar seu acesso agora.\n\n{exc}"
-            )
+            await message.reply_text(build_activation_error_message())
             return
 
-    await message.reply_text(
-        "🙏 Bem-vindo ao Profeta.\n\n"
-        "Use /versiculo para receber um versículo com áudio.\n"
-        "Use /explicar para receber a explicação do último versículo com áudio.\n"
-        "Use /assinar para ativar seu acesso."
-    )
+    await message.reply_text(build_welcome_message())
 
 
 async def ajuda(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    message = update.message
-    if not message:
-        return
-
-    await message.reply_text(
-        "Comandos disponíveis:\n\n"
-        "/start - iniciar o bot\n"
-        "/versiculo - receber um versículo com áudio\n"
-        "/explicar - receber a explicação do último versículo com áudio\n"
-        "/meuultimo - ver o último versículo enviado\n"
-        "/assinar - ativar ou renovar seu acesso\n"
-        "/ajuda - mostrar esta mensagem"
-    )
+    message = get_message(update)
+    if message:
+        await message.reply_text(build_help_message())
 
 
 async def assinar(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    message = update.message
-    if not message:
-        return
-
-    await message.reply_text(
-        f"💳 Ative seu acesso aqui:\n{ASAAS_PAYMENT_LINK_URL}"
-    )
+    message = get_message(update)
+    if message:
+        await message.reply_text(build_subscription_message(ASAAS_PAYMENT_LINK_URL))
 
 
 async def meuultimo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    message = update.message
+    message = get_message(update)
+    verse = await resolve_last_verse(update, context)
     if not message:
         return
 
-    last = await get_last_verse_for_user(update)
-    if not last:
-        await message.reply_text(
-            "Ainda não encontrei versículo no seu histórico. Use /versiculo primeiro."
-        )
+    if not verse:
+        await message.reply_text(build_no_history_message())
         return
 
-    await message.reply_text(format_verse_text(last))
+    await message.reply_text(format_verse_text(verse), reply_markup=build_verse_actions_keyboard())
 
 
 async def versiculo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    message = update.message
+    message = get_message(update)
     if not message:
         return
 
@@ -633,109 +403,202 @@ async def versiculo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     await message.chat.send_action(ChatAction.TYPING)
-
-    verse = await get_random_verse_for_user(update)
-    if not verse:
-        await message.reply_text("Erro ao carregar versículo.")
-        return
-
     try:
-        await send_verse_text_and_audio(update, verse)
+        await send_verse_flow(update, context)
     except TelegramError:
-        logger.exception("Falha ao enviar versículo para o usuário.")
-        await message.reply_text(
-            "⚠️ Não consegui enviar o versículo agora. Tente novamente."
-        )
+        logger.exception("Falha ao enviar versículo via Telegram.")
+        await message.reply_text(build_verse_unavailable_message())
     except Exception:
-        logger.exception("Falha geral ao montar/enviar versículo.")
-        await message.reply_text(
-            "⚠️ Ocorreu um erro ao gerar o versículo com áudio."
-        )
+        logger.exception("Falha geral ao enviar versículo.")
+        await message.reply_text(build_verse_unavailable_message())
 
 
 async def explicar(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    message = update.message
+    message = get_message(update)
     if not message:
         return
 
     if not await require_active_subscription(update):
         return
 
-    last = await get_last_verse_for_user(update)
-    if not last:
-        await message.reply_text("Use /versiculo primeiro.")
+    await message.chat.send_action(ChatAction.TYPING)
+    try:
+        await send_reflection_flow(update, context)
+    except TelegramError:
+        logger.exception("Falha ao enviar reflexão via Telegram.")
+        await message.reply_text(build_audio_unavailable_message())
+    except Exception:
+        logger.exception("Falha ao gerar reflexão premium.")
+        await message.reply_text(build_reflection_unavailable_message())
+
+
+async def orar(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    message = get_message(update)
+    if not message:
         return
 
-    await message.chat.send_action(ChatAction.TYPING)
+    if not await require_active_subscription(update):
+        return
 
     try:
-        explanation = await generate_explanation_text(last)
-    except Exception as exc:
-        logger.exception("Falha ao gerar explicação com IA.")
-        await message.reply_text(
-            f"⚠️ Não consegui gerar a explicação agora.\n\n{exc}"
-        )
+        await send_prayer_flow(update, context)
+    except Exception:
+        logger.exception("Falha ao enviar oração premium.")
+        await message.reply_text(build_prayer_unavailable_message())
+
+
+async def favoritar(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    message = get_message(update)
+    user = get_user(update)
+    if not message or not user or not FEATURE_FAVORITES:
         return
 
+    verse = await resolve_last_verse(update, context)
+    if not verse:
+        await message.reply_text(build_no_history_message())
+        return
+
+    added = await add_favorite_verse(SessionLocal, str(user.id), verse)
+    reference = format_verse_reference(verse)
     await message.reply_text(
-        "📖 Explicação\n\n"
-        f"{explanation}\n\n"
-        "🙏 Posso aprofundar ou orar com você."
+        build_favorite_added_message(reference) if added else build_favorite_exists_message(reference)
     )
 
-    try:
-        await send_explanation_audio(update, last, explanation)
-    except TelegramError:
-        logger.exception("Falha ao enviar áudio da explicação.")
-        await message.reply_text(
-            "⚠️ A explicação em texto foi enviada, mas o áudio falhou desta vez."
-        )
-    except Exception:
-        logger.exception("Falha geral ao gerar/enviar áudio da explicação.")
-        await message.reply_text(
-            "⚠️ A explicação em texto foi enviada, mas não consegui gerar o áudio."
-        )
+
+async def favoritos(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    message = get_message(update)
+    user = get_user(update)
+    if not message or not user or not FEATURE_FAVORITES:
+        return
+
+    items = await list_recent_favorites(SessionLocal, str(user.id))
+    if not items:
+        await message.reply_text(build_favorites_empty_message())
+        return
+
+    await message.reply_text(build_favorites_message(items))
 
 
-# =============================
-# ERROR HANDLER
-# =============================
+async def trilhas(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    message = get_message(update)
+    user = get_user(update)
+    if not message or not FEATURE_JOURNEYS:
+        return
+
+    active = None
+    if user:
+        active = await get_active_journey(SessionLocal, str(user.id))
+
+    await message.reply_text(
+        build_journey_catalog_message(active.title if active else None),
+        reply_markup=build_journey_keyboard(list(JOURNEYS.values())),
+    )
+
+
+async def continuar(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    message = get_message(update)
+    user = get_user(update)
+    if not message or not user or not FEATURE_JOURNEYS:
+        return
+
+    touchpoint = await build_active_journey_touchpoint(SessionLocal, str(user.id))
+    if not touchpoint:
+        await trilhas(update, context)
+        return
+
+    await message.reply_text(touchpoint, reply_markup=build_verse_actions_keyboard())
+
+
+async def handle_interactive_action(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    if not query:
+        return
+
+    await query.answer()
+    data = query.data or ""
+    user = get_user(update)
+
+    if data == ACTION_EXPLAIN:
+        await explicar(update, context)
+        return
+    if data == ACTION_HEAR_VERSE:
+        verse = await resolve_last_verse(update, context)
+        message = get_message(update)
+        if verse and message:
+            await send_verse_audio(message, verse)
+        return
+    if data == ACTION_PRAY:
+        await orar(update, context)
+        return
+    if data == ACTION_FAVORITE:
+        await favoritar(update, context)
+        return
+    if data == ACTION_NEW_VERSE:
+        await versiculo(update, context)
+        return
+    if data == ACTION_HEAR_EXPLANATION:
+        message = get_message(update)
+        verse = await resolve_last_verse(update, context)
+        reflection = get_cached_reflection(context)
+        if message and verse and reflection:
+            await send_reflection_audio(message, verse, reflection)
+        else:
+            await explicar(update, context)
+        return
+    if data == ACTION_SHOW_JOURNEYS:
+        await trilhas(update, context)
+        return
+    if data == ACTION_CONTINUE_JOURNEY:
+        await continuar(update, context)
+        return
+    if data.startswith(JOURNEY_ACTION_PREFIX):
+        journey_key = data.split(":", 1)[1]
+        if not user:
+            return
+        journey = await start_journey(SessionLocal, str(user.id), journey_key)
+        if not journey:
+            return
+        await record_theme_interest(SessionLocal, str(user.id), journey.key, source="journey")
+        message = get_message(update)
+        if message:
+            await message.reply_text(
+                f"🛤️ Trilha iniciada: {journey.title}\n\n{journey.summary}\n\nUse /versiculo para viver o próximo passo com esta intenção no coração.",
+                reply_markup=build_verse_actions_keyboard(),
+            )
+
 
 async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     error = context.error
-
     if isinstance(error, Conflict):
         logger.error("Conflito do Telegram: existe outra instância do bot rodando.")
         return
-
     logger.exception("Erro não tratado no bot.", exc_info=error)
 
 
-# =============================
-# MAIN
-# =============================
-
 def main() -> None:
     setup_logging()
+    application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
 
-    app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("ajuda", ajuda))
+    application.add_handler(CommandHandler("versiculo", versiculo))
+    application.add_handler(CommandHandler("explicar", explicar))
+    application.add_handler(CommandHandler("orar", orar))
+    application.add_handler(CommandHandler("meuultimo", meuultimo))
+    application.add_handler(CommandHandler("assinar", assinar))
+    application.add_handler(CommandHandler("favoritar", favoritar))
+    application.add_handler(CommandHandler("favoritos", favoritos))
+    application.add_handler(CommandHandler("trilhas", trilhas))
+    application.add_handler(CommandHandler("continuar", continuar))
+    application.add_handler(CallbackQueryHandler(handle_interactive_action, pattern=r"^(action:|journey:).*"))
+    application.add_error_handler(on_error)
 
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("ajuda", ajuda))
-    app.add_handler(CommandHandler("versiculo", versiculo))
-    app.add_handler(CommandHandler("explicar", explicar))
-    app.add_handler(CommandHandler("meuultimo", meuultimo))
-    app.add_handler(CommandHandler("assinar", assinar))
-    app.add_error_handler(on_error)
-
-    print(f"Bot @{BOT_USERNAME} iniciado...")
+    log_event(logger, "bot_started", bot_username=BOT_USERNAME)
 
     try:
-        app.run_polling(drop_pending_updates=True)
+        application.run_polling(drop_pending_updates=True)
     except Conflict:
-        logger.error(
-            "Não foi possível iniciar: já existe outra instância consumindo updates deste bot."
-        )
+        logger.error("Não foi possível iniciar: já existe outra instância consumindo updates deste bot.")
     except TelegramError:
         logger.exception("Falha do Telegram ao iniciar o bot.")
 

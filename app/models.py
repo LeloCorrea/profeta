@@ -15,6 +15,34 @@ class User(Base):
     status: Mapped[str] = mapped_column(String(32), default="inactive")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
+
+class UserPreference(Base):
+    __tablename__ = "user_preferences"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), unique=True, index=True)
+    preferred_hour: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    favorite_themes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    explanation_depth: Mapped[str] = mapped_column(String(32), default="balanced")
+    preferred_delivery: Mapped[str] = mapped_column(String(32), default="text_audio")
+    last_requested_theme: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+    )
+
+
+class UserThemeInterest(Base):
+    __tablename__ = "user_theme_interests"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    theme: Mapped[str] = mapped_column(String(64), index=True)
+    source: Mapped[str] = mapped_column(String(32), default="manual")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
 class Subscription(Base):
     __tablename__ = "subscriptions"
 
@@ -35,6 +63,23 @@ class VerseHistory(Base):
     verse: Mapped[str] = mapped_column(String(32))
     text: Mapped[str] = mapped_column(String(4000))
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class FavoriteVerse(Base):
+    __tablename__ = "favorite_verses"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    verse_id: Mapped[int | None] = mapped_column(ForeignKey("verses.id"), nullable=True)
+    book: Mapped[str] = mapped_column(String(128))
+    chapter: Mapped[str] = mapped_column(String(32))
+    verse: Mapped[str] = mapped_column(String(32))
+    text: Mapped[str] = mapped_column(String(4000))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "book", "chapter", "verse", name="uq_favorite_verse_ref"),
+    )
 
 class ActivationToken(Base):
     __tablename__ = "activation_tokens"
@@ -90,3 +135,20 @@ class VerseExplanation(Base):
     explanation: Mapped[str] = mapped_column(Text)
 
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class UserJourney(Base):
+    __tablename__ = "user_journeys"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    journey_key: Mapped[str] = mapped_column(String(64), index=True)
+    status: Mapped[str] = mapped_column(String(32), default="active")
+    current_step: Mapped[int] = mapped_column(Integer, default=0)
+    last_touchpoint_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+    )

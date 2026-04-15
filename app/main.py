@@ -1,11 +1,11 @@
 import os
-import json
 
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from app.db import engine, Base
 import app.models  # noqa: F401
+from app.observability import get_logger, log_event
 from app.payment_service import (
     build_claim_url,
     build_telegram_start_link,
@@ -16,6 +16,7 @@ from app.payment_service import (
 app = FastAPI(title="Profeta API")
 
 ASAAS_WEBHOOK_TOKEN = os.getenv("ASAAS_WEBHOOK_TOKEN", "")
+logger = get_logger(__name__)
 
 
 @app.on_event("startup")
@@ -49,9 +50,6 @@ async def asaas_webhook(
     # 📦 2. Ler payload
     payload = await request.json()
 
-    print("\n===== WEBHOOK ASAAS RECEBIDO =====")
-    print(json.dumps(payload, indent=2))
-
     event = (payload.get("event") or "").strip()
     payment = payload.get("payment", {}) or {}
 
@@ -60,38 +58,42 @@ async def asaas_webhook(
     payment_link_id = (payment.get("paymentLink") or "").strip()
     status = (payment.get("status") or "").strip().upper()
 
-    print("event =", event)
-    print("payment_id =", payment_id)
-    print("customer_id =", customer_id)
-    print("payment_link_id =", payment_link_id)
-    print("status =", status)
+    log_event(
+        logger,
+        "asaas_webhook_received",
+        event_name=event,
+        payment_id=payment_id,
+        customer_id=customer_id,
+        payment_link_id=payment_link_id,
+        status=status,
+    )
 
     # 🔒 3. Validação básica
     if not payment_id:
-        print("IGNORADO: payment.id ausente")
+        log_event(logger, "asaas_webhook_ignored", reason="payment_id_missing")
         return {"ok": True, "ignored": "payment.id ausente"}
 
     if not payment_id.startswith("pay_"):
-        print("IGNORADO: payment_id inválido")
+        log_event(logger, "asaas_webhook_ignored", reason="invalid_payment_id")
         return {"ok": True, "ignored": "payment_id inválido"}
 
     if not payment_link_id:
-        print("IGNORADO: payment.paymentLink ausente")
+        log_event(logger, "asaas_webhook_ignored", reason="payment_link_missing")
         return {"ok": True, "ignored": "payment.paymentLink ausente"}
 
     # 🔒 4. Validar produto correto
     if not payment_link_matches(payment_link_id):
-        print("IGNORADO: paymentLink diferente do esperado")
+        log_event(logger, "asaas_webhook_ignored", reason="unexpected_payment_link")
         return {"ok": True, "ignored": "paymentLink diferente"}
 
     # 🔒 5. Validar evento correto
     if event != "PAYMENT_CONFIRMED":
-        print(f"IGNORADO: evento não relevante ({event})")
+        log_event(logger, "asaas_webhook_ignored", reason="irrelevant_event", event_name=event)
         return {"ok": True, "ignored": f"evento não relevante: {event}"}
 
     # 🔒 6. Validar status confirmado
     if status != "CONFIRMED":
-        print(f"IGNORADO: status não confirmado ({status})")
+        log_event(logger, "asaas_webhook_ignored", reason="status_not_confirmed", status=status)
         return {"ok": True, "ignored": f"status não confirmado: {status}"}
 
     # 🔥 7. Processar pagamento (idempotência no service)
@@ -101,22 +103,27 @@ async def asaas_webhook(
             asaas_customer_id=customer_id,
             asaas_payment_link_id=payment_link_id,
         )
-    except Exception as e:
-        print("💥 ERRO ao processar pagamento:", repr(e))
+    except Exception as error:
+        log_event(logger, "asaas_webhook_error", level=40, reason="payment_processing_failed", error=str(error))
         raise HTTPException(status_code=500, detail="Erro ao processar webhook")
 
     # 🔒 8. Caso duplicado ou falha controlada
     if not token:
-        print("IGNORADO: pagamento já processado")
+        log_event(logger, "asaas_webhook_ignored", reason="payment_already_processed")
         return {"ok": True, "ignored": "pagamento já processado"}
 
     # 🔗 9. Gerar links
     claim_url = build_claim_url(token)
     telegram_start_url = build_telegram_start_link(token)
 
-    print("✅ TOKEN GERADO =", token)
-    print("🔗 CLAIM URL =", claim_url)
-    print("📲 TELEGRAM START URL =", telegram_start_url)
+    log_event(
+        logger,
+        "asaas_webhook_processed",
+        payment_id=payment_id,
+        payment_link_id=payment_link_id,
+        claim_url=claim_url,
+        telegram_start_url=telegram_start_url,
+    )
 
     return {
         "ok": True,

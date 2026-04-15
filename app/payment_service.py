@@ -6,11 +6,14 @@ from sqlalchemy import select
 
 from app.db import SessionLocal
 from app.models import ActivationToken, Payment
+from app.observability import get_logger, log_event
 from app.token_service import create_activation_token
 
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "")
 BOT_USERNAME = os.getenv("BOT_USERNAME", "")
 PAYMENT_LINK_ID = os.getenv("ASAAS_PAYMENT_LINK_ID", "")
+
+logger = get_logger(__name__)
 
 
 async def create_token_for_paid_event(
@@ -33,6 +36,7 @@ async def create_token_for_paid_event(
 
         if existing_payment:
             # já processado → NÃO cria novo token
+            log_event(logger, "payment_already_processed", provider_payment_id=asaas_payment_id)
             return None
 
         # ✅ 2. SALVAR PAYMENT
@@ -42,7 +46,7 @@ async def create_token_for_paid_event(
             payment_link_id=asaas_payment_link_id,
             status="CONFIRMED",
             customer_id=asaas_customer_id,
-            created_at=str(datetime.utcnow()),
+            created_at=datetime.utcnow(),
         )
 
         session.add(payment)
@@ -64,6 +68,13 @@ async def create_token_for_paid_event(
         row.asaas_payment_link_id = asaas_payment_link_id
 
         await session.commit()
+
+        log_event(
+            logger,
+            "payment_confirmed_and_token_created",
+            provider_payment_id=asaas_payment_id,
+            payment_link_id=asaas_payment_link_id or "",
+        )
 
         return token
 
