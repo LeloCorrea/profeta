@@ -131,8 +131,10 @@ class VerseExplanation(Base):
     __tablename__ = "verse_explanations"
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-
-    verse_id: Mapped[int] = mapped_column(ForeignKey("verses.id"), unique=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    book: Mapped[str] = mapped_column(String(128), index=True)
+    chapter: Mapped[str] = mapped_column(String(32), index=True)
+    verse: Mapped[str] = mapped_column(String(32), index=True)
     explanation: Mapped[str] = mapped_column(Text)
 
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

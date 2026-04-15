@@ -1,6 +1,5 @@
-import hashlib
 import re
-import shutil
+import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -11,9 +10,7 @@ from app.config import TTS_RATE, TTS_VOICE
 from app.observability import get_logger, log_event
 
 AUDIO_DIR = Path("data/audio")
-AUDIO_CACHE_DIR = Path("data/audio_cache")
 AUDIO_DIR.mkdir(parents=True, exist_ok=True)
-AUDIO_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 logger = get_logger(__name__)
 
@@ -26,66 +23,53 @@ class AudioAsset:
     telegram_file_id: Optional[str] = None
 
 
-def build_audio_filename(text: str) -> str:
-    hash_id = hashlib.md5(text.encode("utf-8")).hexdigest()
-    return f"{hash_id}.mp3"
+def normalize_text(text: str) -> str:
+    text = unicodedata.normalize("NFKD", text)
+    text = text.encode("ascii", "ignore").decode("ascii")
+    text = text.lower()
+    text = re.sub(r"[^a-z0-9]+", "_", text)
+    return text.strip("_")
 
 
-def sanitize_cache_segment(value: str) -> str:
-    cleaned = re.sub(r"[^a-zA-Z0-9_-]+", "_", value.strip())
-    return cleaned.strip("_") or "arquivo"
+def build_audio_filename(prefix: str, verse: dict[str, object]) -> str:
+    normalized_book = normalize_text(str(verse["book"])) or "livro"
+    chapter = str(verse["chapter"]).strip()
+    verse_number = str(verse["verse"]).strip()
+    return f"{prefix}_{normalized_book}_{chapter}_{verse_number}.mp3"
 
 
-def build_named_cache_path(prefix: str, verse: dict[str, object]) -> Path:
-    safe_book = sanitize_cache_segment(str(verse["book"]))
-    chapter = str(verse["chapter"])
-    verse_number = str(verse["verse"])
-    return AUDIO_CACHE_DIR / f"{prefix}_{safe_book}_{chapter}_{verse_number}.mp3"
+def build_named_audio_path(prefix: str, verse: dict[str, object]) -> Path:
+    return AUDIO_DIR / build_audio_filename(prefix, verse)
 
 
-def get_audio_path(text: str) -> Path:
-    filename = build_audio_filename(text)
-    return AUDIO_DIR / filename
-
-
-async def get_or_create_tts_audio(text: str) -> AudioAsset:
-    path = get_audio_path(text)
-    key = path.stem
-
-    if path.exists():
-        log_event(logger, "audio_cache_hit", cache_layer="tts", audio_key=key)
-        return AudioAsset(key=key, path=path, cache_hit=True)
-
+async def _save_tts_audio(path: Path, text: str) -> None:
     communicate = edge_tts.Communicate(
         text=text,
         voice=TTS_VOICE,
         rate=TTS_RATE,
     )
     await communicate.save(str(path))
-    log_event(logger, "audio_generated", cache_layer="tts", audio_key=key, voice=TTS_VOICE)
-    return AudioAsset(key=key, path=path, cache_hit=False)
 
 
 async def ensure_named_audio_asset(prefix: str, verse: dict[str, object], text: str) -> AudioAsset:
-    cache_path = build_named_cache_path(prefix, verse)
-    cache_key = cache_path.stem
+    path = build_named_audio_path(prefix, verse)
+    key = path.stem
 
-    if cache_path.exists():
-        log_event(logger, "audio_cache_hit", cache_layer=prefix, audio_key=cache_key)
-        return AudioAsset(key=cache_key, path=cache_path, cache_hit=True)
+    if path.exists():
+        log_event(logger, "audio_cache_hit", cache_layer=prefix, audio_key=key)
+        return AudioAsset(key=key, path=path, cache_hit=True)
 
-    source_asset = await get_or_create_tts_audio(text)
-    shutil.copy(source_asset.path, cache_path)
-    log_event(
-        logger,
-        "audio_cache_miss",
-        cache_layer=prefix,
-        audio_key=cache_key,
-        source_cache_hit=source_asset.cache_hit,
-    )
-    return AudioAsset(key=cache_key, path=cache_path, cache_hit=False)
+    await _save_tts_audio(path, text)
+    log_event(logger, "audio_generated", cache_layer=prefix, audio_key=key, voice=TTS_VOICE)
+    return AudioAsset(key=key, path=path, cache_hit=False)
 
 
 async def generate_tts_audio(text: str) -> Path:
-    asset = await get_or_create_tts_audio(text)
-    return asset.path
+    safe_name = normalize_text(text)[:80] or "audio"
+    path = AUDIO_DIR / f"audio_{safe_name}.mp3"
+    if not path.exists():
+        await _save_tts_audio(path, text)
+        log_event(logger, "audio_generated", cache_layer="generic", audio_key=path.stem, voice=TTS_VOICE)
+    else:
+        log_event(logger, "audio_cache_hit", cache_layer="generic", audio_key=path.stem)
+    return path

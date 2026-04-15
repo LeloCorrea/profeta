@@ -105,7 +105,7 @@ async def test_explicar_flow_uses_last_verse_and_sends_reflection_audio(
     async def fake_user_has_active_subscription(user_id):
         return True
 
-    async def fake_generate_reflection_content(verse, depth, journey_title):
+    async def fake_get_or_create_reflection_content(session_factory, user_id, verse, depth, journey_title):
         return build_fake_reflection(depth)
 
     async def fake_get_active_journey(session_factory, user_id):
@@ -115,7 +115,7 @@ async def test_explicar_flow_uses_last_verse_and_sends_reflection_audio(
         return "balanced"
 
     monkeypatch.setattr(bot_module, "user_has_active_subscription", fake_user_has_active_subscription)
-    monkeypatch.setattr(bot_module, "generate_reflection_content", fake_generate_reflection_content)
+    monkeypatch.setattr(bot_module, "get_or_create_reflection_content", fake_get_or_create_reflection_content)
     monkeypatch.setattr(bot_module, "send_reflection_audio", fake_send_reflection_audio)
     monkeypatch.setattr(bot_module, "get_active_journey", fake_get_active_journey)
     monkeypatch.setattr(bot_module, "get_user_explanation_depth", fake_get_user_explanation_depth)
@@ -146,10 +146,16 @@ async def test_explicar_returns_human_error_message_on_failure(fake_update, fake
     async def raise_error(*args, **kwargs):
         raise RuntimeError("falha-openai")
 
+    async def fake_get_user_explanation_depth(session_factory, user_id):
+        return "balanced"
+
+    async def fake_get_active_journey(session_factory, user_id):
+        return None
+
     monkeypatch.setattr(bot_module, "user_has_active_subscription", lambda user_id: True)
-    monkeypatch.setattr(bot_module, "generate_reflection_content", raise_error)
-    monkeypatch.setattr(bot_module, "get_user_explanation_depth", lambda session_factory, user_id: "balanced")
-    monkeypatch.setattr(bot_module, "get_active_journey", lambda session_factory, user_id: None)
+    monkeypatch.setattr(bot_module, "get_or_create_reflection_content", raise_error)
+    monkeypatch.setattr(bot_module, "get_user_explanation_depth", fake_get_user_explanation_depth)
+    monkeypatch.setattr(bot_module, "get_active_journey", fake_get_active_journey)
     fake_context.user_data["last_verse"] = sample_verse
 
     await bot_module.explicar(fake_update, fake_context)

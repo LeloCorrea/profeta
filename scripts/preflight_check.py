@@ -9,6 +9,7 @@ REQUIRED_IN_PROD = [
     "BOT_USERNAME",
     "PUBLIC_BASE_URL",
     "ASAAS_WEBHOOK_TOKEN",
+    "OPENAI_API_KEY",
 ]
 
 
@@ -26,7 +27,6 @@ def main() -> int:
         root / "logs",
         root / "data",
         root / "data" / "audio",
-        root / "data" / "audio_cache",
     ]
 
     for directory in expected_dirs:

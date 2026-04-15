@@ -3,7 +3,10 @@ import json
 from dataclasses import asdict, dataclass
 from typing import Any, Optional
 
+from sqlalchemy import select
+
 from app.config import OPENAI_EXPLANATION_MODEL
+from app.models import User, VerseExplanation
 from app.observability import get_logger, log_event
 from app.verse_service import format_verse_reference
 
@@ -87,6 +90,19 @@ def _fallback_reflection(verse: dict[str, Any], depth: str) -> ReflectionContent
     )
 
 
+def _build_cached_reflection(
+    verse: dict[str, Any],
+    explanation: str,
+    depth: str,
+) -> ReflectionContent:
+    reflection = _fallback_reflection(verse, depth)
+    cleaned_explanation = explanation.strip()
+    if cleaned_explanation:
+        reflection.explanation = cleaned_explanation
+        reflection.summary = cleaned_explanation
+    return reflection
+
+
 def _build_prompt(verse: dict[str, Any], depth: str, journey_title: Optional[str] = None) -> str:
     journey_context = ""
     if journey_title:
@@ -151,6 +167,112 @@ async def generate_reflection_content(
         depth=depth,
         journey_title=journey_title or "",
     )
+    return reflection
+
+
+async def get_cached_reflection_content(
+    session_factory,
+    verse: dict[str, Any],
+    *,
+    depth: str = "balanced",
+) -> Optional[ReflectionContent]:
+    async with session_factory() as session:
+        stmt = (
+            select(VerseExplanation)
+            .where(VerseExplanation.book == str(verse["book"]))
+            .where(VerseExplanation.chapter == str(verse["chapter"]))
+            .where(VerseExplanation.verse == str(verse["verse"]))
+            .order_by(VerseExplanation.created_at.asc())
+            .limit(1)
+        )
+        row = await session.scalar(stmt)
+
+    if not row:
+        log_event(
+            logger,
+            "reflection_cache_miss",
+            verse_reference=format_verse_reference(verse),
+            depth=depth,
+        )
+        return None
+
+    log_event(
+        logger,
+        "reflection_cache_hit",
+        verse_reference=format_verse_reference(verse),
+        depth=depth,
+        cached_user_id=row.user_id,
+    )
+    return _build_cached_reflection(verse, row.explanation, depth)
+
+
+async def save_reflection_content(
+    session_factory,
+    telegram_user_id: str,
+    verse: dict[str, Any],
+    reflection: ReflectionContent,
+) -> None:
+    async with session_factory() as session:
+        existing = await session.scalar(
+            select(VerseExplanation)
+            .where(VerseExplanation.book == str(verse["book"]))
+            .where(VerseExplanation.chapter == str(verse["chapter"]))
+            .where(VerseExplanation.verse == str(verse["verse"]))
+            .order_by(VerseExplanation.created_at.asc())
+            .limit(1)
+        )
+        if existing:
+            log_event(
+                logger,
+                "reflection_cache_reused_before_save",
+                telegram_user_id=telegram_user_id,
+                verse_reference=format_verse_reference(verse),
+            )
+            return
+
+        user = await session.scalar(select(User).where(User.telegram_user_id == str(telegram_user_id)))
+        if not user:
+            user = User(telegram_user_id=str(telegram_user_id), status="active")
+            session.add(user)
+            await session.flush()
+
+        session.add(
+            VerseExplanation(
+                user_id=user.id,
+                book=str(verse["book"]),
+                chapter=str(verse["chapter"]),
+                verse=str(verse["verse"]),
+                explanation=reflection.explanation.strip(),
+            )
+        )
+        await session.commit()
+
+    log_event(
+        logger,
+        "reflection_cached",
+        telegram_user_id=telegram_user_id,
+        verse_reference=format_verse_reference(verse),
+    )
+
+
+async def get_or_create_reflection_content(
+    session_factory,
+    telegram_user_id: str,
+    verse: dict[str, Any],
+    *,
+    depth: str = "balanced",
+    journey_title: Optional[str] = None,
+) -> ReflectionContent:
+    cached = await get_cached_reflection_content(session_factory, verse, depth=depth)
+    if cached:
+        return cached
+
+    reflection = await generate_reflection_content(
+        verse,
+        depth=depth,
+        journey_title=journey_title,
+    )
+    await save_reflection_content(session_factory, telegram_user_id, verse, reflection)
     return reflection
 
 

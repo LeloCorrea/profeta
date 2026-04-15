@@ -12,7 +12,6 @@ EnvironmentFile=/opt/profeta/current/.env
 Environment=PYTHONUNBUFFERED=1
 RuntimeDirectory=profeta
 ExecStart=/bin/bash /opt/profeta/current/scripts/start_api.sh
-ExecStop=/bin/kill -s TERM $MAINPID
 Restart=always
 RestartSec=5
 TimeoutStartSec=45

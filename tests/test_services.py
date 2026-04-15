@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 from sqlalchemy import select
 
-from app.models import User, UserJourney, UserPreference, UserThemeInterest, Verse, VerseHistory
+from app.models import User, UserJourney, UserPreference, UserThemeInterest, Verse, VerseExplanation, VerseHistory
 
 
 @pytest.mark.asyncio
@@ -52,21 +52,41 @@ def test_verse_text_and_tts_rendering(sample_verse):
 async def test_audio_service_cache_miss_then_hit(tmp_audio_dirs, monkeypatch, sample_verse):
     import app.audio_service as audio_service
 
-    audio_dir, cache_dir = tmp_audio_dirs
-    source_path = audio_dir / "source.mp3"
-    source_path.write_bytes(b"fake-audio")
+    audio_dir = tmp_audio_dirs
 
-    async def fake_get_or_create_tts_audio(text):
-        return audio_service.AudioAsset(key="source", path=source_path, cache_hit=False)
+    async def fake_save_tts_audio(path, text):
+        path.write_bytes(b"fake-audio")
 
-    monkeypatch.setattr(audio_service, "get_or_create_tts_audio", fake_get_or_create_tts_audio)
+    monkeypatch.setattr(audio_service, "_save_tts_audio", fake_save_tts_audio)
 
     first_asset = await audio_service.ensure_named_audio_asset("versiculo", sample_verse, "texto de teste")
     second_asset = await audio_service.ensure_named_audio_asset("versiculo", sample_verse, "texto de teste")
 
     assert first_asset.cache_hit is False
     assert second_asset.cache_hit is True
-    assert (cache_dir / "versiculo_Salmos_23_1.mp3").exists()
+    assert (audio_dir / "versiculo_salmos_23_1.mp3").exists()
+
+
+@pytest.mark.asyncio
+async def test_audio_service_normalizes_accents_in_filename(tmp_audio_dirs, monkeypatch):
+    import app.audio_service as audio_service
+
+    audio_dir = tmp_audio_dirs
+    verse = {
+        "book": "Juízes",
+        "chapter": "6",
+        "verse": "12",
+        "text": "Teste",
+    }
+
+    async def fake_save_tts_audio(path, text):
+        path.write_bytes(b"fake-audio")
+
+    monkeypatch.setattr(audio_service, "_save_tts_audio", fake_save_tts_audio)
+
+    asset = await audio_service.ensure_named_audio_asset("explicacao", verse, "texto")
+
+    assert asset.path == audio_dir / "explicacao_juizes_6_12.mp3"
 
 
 @pytest.mark.asyncio
@@ -111,6 +131,57 @@ async def test_content_service_falls_back_for_invalid_json(monkeypatch, sample_v
 
     assert reflection.explanation == "texto livre sem json"
     assert reflection.prayer
+
+
+@pytest.mark.asyncio
+async def test_content_service_persists_and_reuses_explanation(db_sessionmaker, monkeypatch, sample_verse):
+    import app.content_service as content_service
+
+    calls = {"count": 0}
+
+    async def fake_generate_reflection_content(verse, depth="balanced", journey_title=None):
+        calls["count"] += 1
+        return content_service.ReflectionContent(
+            explanation="Explicacao persistida.",
+            context="Contexto original.",
+            application="Aplicacao original.",
+            prayer="Oracao original.",
+            summary="Resumo original.",
+            depth=depth,
+        )
+
+    monkeypatch.setattr(content_service, "generate_reflection_content", fake_generate_reflection_content)
+
+    first = await content_service.get_or_create_reflection_content(
+        db_sessionmaker,
+        "u-cache",
+        sample_verse,
+        depth="balanced",
+    )
+    second = await content_service.get_or_create_reflection_content(
+        db_sessionmaker,
+        "u-cache",
+        sample_verse,
+        depth="balanced",
+    )
+
+    assert calls["count"] == 1
+    assert first.explanation == "Explicacao persistida."
+    assert second.explanation == "Explicacao persistida."
+
+    async with db_sessionmaker() as session:
+        items = (
+            await session.execute(
+                select(VerseExplanation).where(
+                    VerseExplanation.book == "Salmos",
+                    VerseExplanation.chapter == "23",
+                    VerseExplanation.verse == "1",
+                )
+            )
+        ).scalars().all()
+
+    assert len(items) == 1
+    assert items[0].explanation == "Explicacao persistida."
 
 
 @pytest.mark.asyncio

@@ -5,7 +5,24 @@ APP_USER="${APP_USER:-profeta}"
 APP_GROUP="${APP_GROUP:-profeta}"
 APP_BASE_DIR="${APP_BASE_DIR:-/opt/profeta}"
 APP_DIR="${APP_DIR:-$APP_BASE_DIR/current}"
-PYTHON_BIN="${PYTHON_BIN:-python3.9}"
+
+# Ubuntu 22.04 ships python3.10; aceita Python 3.9+ (nosso código é compatível).
+# Sobrescreva com PYTHON_BIN=python3.9 se precisar de versão específica.
+if [[ -z "${PYTHON_BIN:-}" ]]; then
+  for _candidate in python3.10 python3.9 python3.11 python3; do
+    if command -v "$_candidate" >/dev/null 2>&1; then
+      PYTHON_BIN="$_candidate"
+      break
+    fi
+  done
+fi
+
+if [[ -z "${PYTHON_BIN:-}" ]]; then
+  echo "[bootstrap] ERRO: nenhum Python 3.x encontrado. Instale com: sudo apt-get install python3 python3-venv" >&2
+  exit 1
+fi
+
+echo "[bootstrap] Python detectado: $($PYTHON_BIN --version 2>&1)"
 
 echo "[bootstrap] criando usuário/grupo se necessário"
 if ! id -u "$APP_USER" >/dev/null 2>&1; then
@@ -22,7 +39,7 @@ if [[ ! -d "$APP_DIR/.git" ]]; then
 fi
 
 echo "[bootstrap] preparando diretórios de runtime"
-sudo -u "$APP_USER" mkdir -p "$APP_DIR/logs" "$APP_DIR/data" "$APP_DIR/data/audio" "$APP_DIR/data/audio_cache"
+sudo -u "$APP_USER" mkdir -p "$APP_DIR/logs" "$APP_DIR/data" "$APP_DIR/data/audio"
 
 echo "[bootstrap] criando venv"
 sudo -u "$APP_USER" "$PYTHON_BIN" -m venv "$APP_DIR/.venv"

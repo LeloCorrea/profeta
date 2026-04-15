@@ -24,7 +24,7 @@ from app.content_service import (
     ReflectionContent,
     build_default_prayer,
     build_explanation_audio_text,
-    generate_reflection_content,
+    get_or_create_reflection_content,
     render_prayer_message,
     render_reflection_message,
 )
@@ -309,7 +309,9 @@ async def send_reflection_flow(update: Update, context: ContextTypes.DEFAULT_TYP
     if FEATURE_JOURNEYS:
         active_journey = await get_active_journey(SessionLocal, str(user.id))
 
-    reflection = await generate_reflection_content(
+    reflection = await get_or_create_reflection_content(
+        SessionLocal,
+        str(user.id),
         verse,
         depth=depth,
         journey_title=active_journey.title if active_journey else None,

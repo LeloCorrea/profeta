@@ -120,13 +120,10 @@ def tmp_audio_dirs(tmp_path, monkeypatch):
     import app.audio_service as audio_service
 
     audio_dir = tmp_path / "audio"
-    cache_dir = tmp_path / "audio_cache"
     audio_dir.mkdir(parents=True, exist_ok=True)
-    cache_dir.mkdir(parents=True, exist_ok=True)
 
     monkeypatch.setattr(audio_service, "AUDIO_DIR", audio_dir)
-    monkeypatch.setattr(audio_service, "AUDIO_CACHE_DIR", cache_dir)
-    return audio_dir, cache_dir
+    return audio_dir
 
 
 def build_fake_reflection(depth="balanced"):
