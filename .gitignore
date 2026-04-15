@@ -25,6 +25,7 @@ logs/
 *.log
 
 # Temporary files
+*.pid
 *.tmp
 *.temp
 *.bak
