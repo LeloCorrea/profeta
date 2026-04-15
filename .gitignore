@@ -6,3 +6,35 @@
 # Python virtual environments
 .venv/
 venv/
+env/
+
+# Python caches and build artifacts
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Local databases
+*.db
+*.sqlite
+*.sqlite3
+
+# Local runtime data and logs
+data/audio_cache/
+logs/
+*.log
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
+*.swp
+*.swo
+~$*
+
+# IDE and editor artifacts
+.vscode/
+.idea/
+*.code-workspace
+.DS_Store
+Thumbs.db
