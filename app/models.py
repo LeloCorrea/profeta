@@ -136,7 +136,8 @@ class VerseExplanation(Base):
     chapter: Mapped[str] = mapped_column(String(32), index=True)
     verse: Mapped[str] = mapped_column(String(32), index=True)
     explanation: Mapped[str] = mapped_column(Text)
-
+    source: Mapped[Optional[str]] = mapped_column(String(32), default="openai")
+    is_fallback: Mapped[Optional[bool]] = mapped_column(default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
