@@ -1,0 +1,26 @@
+# python
+.venv/
+__pycache__/
+*.pyc
+
+# env
+.env
+
+# logs
+*.log
+
+# database
+*.db
+
+# build
+*.tar.gz
+
+# ssh / keys
+profeta_oracle_nopass
+
+# vscode
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
