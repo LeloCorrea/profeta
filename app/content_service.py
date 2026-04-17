@@ -475,3 +475,9 @@ def is_valid_explanation(text: str) -> bool:
     if any(k.lower() in text.lower() for k in blacklist):
         return False
     return True
+
+def build_default_prayer(verse: dict[str, Any]) -> str:
+    reference = format_verse_reference(verse)
+    return (
+        f"Senhor, que a verdade de {reference} encontre espaço no meu coração hoje. Guia-me para viver conforme Tua vontade. Amém."
+    )
