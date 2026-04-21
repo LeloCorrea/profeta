@@ -484,3 +484,66 @@ async def test_subscription_info_returns_no_account_for_unknown(db_sessionmaker)
     info = await subscription_service.get_subscription_info("u-nobody")
 
     assert info["has_account"] is False
+
+
+# ── is_fallback: campo real no dataclass ──────────────────────────────────────
+
+def test_reflection_content_is_fallback_is_a_proper_field(sample_verse):
+    from app.content_service import ReflectionContent
+
+    ok = ReflectionContent(
+        explanation="x", context="x", application="x", prayer="x", summary="x",
+        is_fallback=False,
+    )
+    fallback = ReflectionContent(
+        explanation="x", context="x", application="x", prayer="x", summary="x",
+        is_fallback=True,
+    )
+    assert ok.is_fallback is False
+    assert fallback.is_fallback is True
+
+
+def test_reflection_content_from_dict_preserves_is_fallback():
+    from app.content_service import ReflectionContent
+
+    r = ReflectionContent.from_dict({
+        "explanation": "e", "context": "c", "application": "a",
+        "prayer": "p", "summary": "s", "is_fallback": True,
+    })
+    assert r.is_fallback is True
+
+
+def test_build_explanation_audio_text_empty_when_fallback(sample_verse):
+    from app.content_service import ReflectionContent, build_explanation_audio_text
+
+    fallback_reflection = ReflectionContent(
+        explanation="x", context="x", application="x", prayer="x", summary="x",
+        is_fallback=True,
+    )
+    assert build_explanation_audio_text(sample_verse, fallback_reflection) == ""
+
+
+@pytest.mark.asyncio
+async def test_send_reflection_audio_skips_when_fallback(
+    tmp_audio_dirs, monkeypatch, fake_update, fake_context, sample_verse
+):
+    import app.bot_flows as bot_flows_module
+    import app.audio_service as audio_service
+    from app.content_service import ReflectionContent
+
+    tts_called = {"count": 0}
+
+    async def fake_save_tts(path, text):
+        tts_called["count"] += 1
+
+    monkeypatch.setattr(audio_service, "_save_tts_audio", fake_save_tts)
+
+    fallback_reflection = ReflectionContent(
+        explanation="Fallback texto.", context="x", application="x", prayer="x", summary="x",
+        is_fallback=True,
+    )
+    message = fake_update.effective_message
+    await bot_flows_module.send_reflection_audio(message, sample_verse, fallback_reflection)
+
+    assert tts_called["count"] == 0
+    assert message.audios == []

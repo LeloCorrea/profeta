@@ -100,11 +100,11 @@ async def send_verse_audio(message, verse: dict[str, Any]) -> None:
 
 
 async def send_reflection_audio(message, verse: dict[str, Any], reflection: ReflectionContent) -> None:
-    asset = await ensure_named_audio_asset(
-        "explicacao",
-        verse,
-        build_explanation_audio_text(verse, reflection),
-    )
+    audio_text = build_explanation_audio_text(verse, reflection)
+    if not audio_text:
+        logger.info("[Áudio] Reflexão fallback — áudio omitido para %s", format_verse_reference(verse))
+        return
+    asset = await ensure_named_audio_asset("explicacao", verse, audio_text)
     await send_audio_asset(
         message,
         asset,
