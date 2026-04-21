@@ -4,8 +4,9 @@ from typing import Optional
 
 from sqlalchemy import select
 
-from app.observability import get_logger, log_event
+from app.db_helpers import get_or_create_user_in_session
 from app.models import User, UserJourney
+from app.observability import get_logger, log_event
 
 
 logger = get_logger(__name__)
@@ -103,17 +104,6 @@ JOURNEYS: dict[str, JourneyDefinition] = {
 }
 
 
-async def _get_or_create_user(session, telegram_user_id: str) -> User:
-    user = await session.scalar(select(User).where(User.telegram_user_id == str(telegram_user_id)))
-    if user:
-        return user
-
-    user = User(telegram_user_id=str(telegram_user_id), status="active")
-    session.add(user)
-    await session.flush()
-    return user
-
-
 def list_journeys() -> list[JourneyDefinition]:
     return list(JOURNEYS.values())
 
@@ -134,7 +124,7 @@ async def start_journey(session_factory, telegram_user_id: str, journey_key: str
         return None
 
     async with session_factory() as session:
-        user = await _get_or_create_user(session, telegram_user_id)
+        user = await get_or_create_user_in_session(session, telegram_user_id)
 
         active_rows = (
             await session.execute(

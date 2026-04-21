@@ -51,7 +51,7 @@ class Subscription(Base):
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
     plan_name: Mapped[str] = mapped_column(String(64), default="monthly")
     status: Mapped[str] = mapped_column(String(32), default="inactive")
-    paid_until: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    paid_until: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 class VerseHistory(Base):
@@ -92,7 +92,7 @@ class ActivationToken(Base):
     asaas_payment_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     asaas_customer_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     asaas_payment_link_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
-    used_at: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    used_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 class Payment(Base):

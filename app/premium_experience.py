@@ -35,13 +35,16 @@ def build_help_message() -> str:
         "Comandos disponíveis\n\n"
         "/start - iniciar e ativar acesso por link\n"
         "/versiculo - receber um versículo com áudio\n"
-        "/explicar - receber reflexão guiada sobre o último versículo\n"
-        "/orar - receber uma oração baseada no último versículo\n"
+        "/explicar - reflexão guiada sobre o último versículo\n"
+        "/reflexao - reflexão contemplativa profunda sobre o último versículo\n"
+        "/orar - oração baseada no último versículo\n"
         "/meuultimo - rever o último versículo enviado\n"
         "/favoritar - salvar o último versículo\n"
         "/favoritos - revisar seus versículos favoritos\n"
         "/trilhas - conhecer jornadas espirituais disponíveis\n"
         "/continuar - retomar sua jornada atual\n"
+        "/buscar - buscar versículos por tema\n"
+        "/meuplano - ver status da sua assinatura\n"
         "/assinar - ativar ou renovar seu acesso\n"
         "/ajuda - mostrar esta mensagem"
     )
@@ -170,6 +173,40 @@ def build_prayer_actions_keyboard() -> Optional[InlineKeyboardMarkup]:
     )
 
 
+def build_rate_limit_message() -> str:
+    return "⏳ Você enviou muitas solicitações. Aguarde um momento antes de tentar novamente."
+
+
+def build_search_results_message(keyword: str, verses: list[dict]) -> str:
+    def _ref(v: dict) -> str:
+        return f"{v['book']} {v['chapter']}:{v['verse']}"
+
+    items = "\n\n".join(f"📖 {_ref(v)}\n\u201c{v['text']}\u201d" for v in verses)
+    return f"🔍 Resultado para \u201c{keyword}\u201d\n\n{items}"
+
+
+def build_search_empty_message(keyword: str) -> str:
+    return f"Não encontrei versículos com \u201c{keyword}\u201d. Tente outro tema ou palavra-chave."
+
+
+def build_admin_status_message(stats: dict) -> str:
+    return (
+        "📊 Status do Profeta\n\n"
+        f"Usuários cadastrados: {stats.get('total_users', 0)}\n"
+        f"Assinaturas ativas: {stats.get('active_subscriptions', 0)}"
+    )
+
+
+def build_admin_users_message(users: list[dict]) -> str:
+    if not users:
+        return "Nenhum usuário ativo encontrado."
+    lines = "\n".join(
+        f"• @{u['username']} ({u['telegram_user_id']}) — desde {u['created_at']}"
+        for u in users
+    )
+    return f"👥 Usuários ativos recentes\n\n{lines}"
+
+
 def build_journey_keyboard(journeys: list[object]) -> Optional[InlineKeyboardMarkup]:
     if not FEATURE_INLINE_ACTIONS:
         return None
@@ -184,3 +221,32 @@ def build_journey_keyboard(journeys: list[object]) -> Optional[InlineKeyboardMar
         for journey in journeys
     ]
     return InlineKeyboardMarkup(rows)
+
+
+def build_meuplano_message(info: dict) -> str:
+    if not info.get("has_account"):
+        return "Você ainda não possui uma conta. Use /start para começar."
+    if not info.get("has_subscription"):
+        return (
+            "📋 Meu Plano\n\n"
+            "❌ Você não possui assinatura ativa.\n\n"
+            "Use /assinar para liberar seu acesso premium."
+        )
+    status = info.get("status", "")
+    plan = info.get("plan", "")
+    paid_until = info.get("paid_until")
+    days = info.get("days_remaining")
+
+    status_emoji = "✅" if status == "active" else "❌"
+    status_label = "Ativa" if status == "active" else "Inativa"
+
+    lines = ["📋 Meu Plano\n", f"{status_emoji} Status: {status_label}"]
+    if plan:
+        lines.append(f"📦 Plano: {plan}")
+    if paid_until:
+        lines.append(f"📅 Válido até: {paid_until}")
+    if days is not None and status == "active":
+        lines.append(f"⏳ {days} dias restantes")
+    if status != "active":
+        lines.append("\nUse /assinar para renovar seu acesso.")
+    return "\n".join(lines)

@@ -5,6 +5,14 @@ import pytest_asyncio
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.db import Base
+from app.rate_limiter import clear_all_rate_limits
+
+
+@pytest.fixture(autouse=True)
+def reset_rate_limits():
+    clear_all_rate_limits()
+    yield
+    clear_all_rate_limits()
 
 
 @pytest_asyncio.fixture

@@ -1,18 +1,16 @@
-import os
 from datetime import datetime
 from typing import Optional
 from urllib.parse import quote
 
 from sqlalchemy import select
 
+from app.config import ASAAS_PAYMENT_LINK_ID, BOT_USERNAME, PUBLIC_BASE_URL
 from app.db import SessionLocal
 from app.models import ActivationToken, Payment
 from app.observability import get_logger, log_event
 from app.token_service import generate_token_value
 
-PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "")
-BOT_USERNAME = os.getenv("BOT_USERNAME", "")
-PAYMENT_LINK_ID = os.getenv("ASAAS_PAYMENT_LINK_ID", "")
+PAYMENT_LINK_ID = ASAAS_PAYMENT_LINK_ID
 
 logger = get_logger(__name__)
 

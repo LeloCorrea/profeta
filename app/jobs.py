@@ -1,23 +1,23 @@
 import asyncio
-import json
 import logging
-import random
 from pathlib import Path
 
 from sqlalchemy import select
 from telegram import Bot
+from telegram.error import TelegramError
 
-from app.audio_service import ensure_named_audio_asset
-from app.config import APP_NAME, ENV, TELEGRAM_BOT_TOKEN, missing_settings
+from app.audio_service import cleanup_old_audio_files, ensure_named_audio_asset
+from app.config import APP_NAME, AUDIO_MAX_AGE_DAYS, ENV, TELEGRAM_BOT_TOKEN, missing_settings
 from app.db import SessionLocal
-from app.models import Subscription, User, VerseHistory
+from app.models import Subscription, User
 from app.observability import log_event
-from app.verse_service import build_tts_text
+from app.subscription_service import expire_overdue_subscriptions
+from app.verse_service import build_tts_text, get_random_verse_for_user, save_verse_history
 
-BIBLE_PATH = Path("data/bible/bible.json")
+_FATAL_TELEGRAM_KEYWORDS = ("blocked", "bot was blocked", "deactivated", "kicked", "chat not found", "user not found")
+
 LOGS_DIR = Path("logs")
 LOG_FILE = LOGS_DIR / "daily_job.log"
-RECENT_HISTORY_LIMIT = 5
 
 
 def setup_logger() -> logging.Logger:
@@ -36,19 +36,6 @@ def setup_logger() -> logging.Logger:
     return logger
 
 
-def load_verses() -> list[dict]:
-    if not BIBLE_PATH.exists():
-        return []
-
-    with open(BIBLE_PATH, "r", encoding="utf-8") as file_handle:
-        data = json.load(file_handle)
-
-    if not isinstance(data, list):
-        return []
-
-    return data
-
-
 async def get_active_user_ids() -> list[str]:
     async with SessionLocal() as session:
         stmt = (
@@ -58,42 +45,6 @@ async def get_active_user_ids() -> list[str]:
         )
         result = await session.execute(stmt)
         return [row[0] for row in result.all() if row[0]]
-
-
-async def get_recent_verses(user_id: str) -> list[str]:
-    async with SessionLocal() as session:
-        stmt = (
-            select(VerseHistory.text)
-            .where(VerseHistory.telegram_user_id == str(user_id))
-            .order_by(VerseHistory.id.desc())
-            .limit(RECENT_HISTORY_LIMIT)
-        )
-        result = await session.execute(stmt)
-        return [row[0] for row in result.all()]
-
-
-def pick_non_repeating_verse(verses: list[dict], recent_texts: list[str], logger):
-    available = [verse for verse in verses if verse.get("text") not in recent_texts]
-
-    if not available:
-        logger.warning("Todos os versiculos recentes foram bloqueados. Aplicando fallback.")
-        return random.choice(verses)
-
-    return random.choice(available)
-
-
-async def save_verse_history(user_id: str, verse: dict) -> None:
-    async with SessionLocal() as session:
-        session.add(
-            VerseHistory(
-                telegram_user_id=str(user_id),
-                book=str(verse.get("book", "")),
-                chapter=str(verse.get("chapter", "")),
-                verse=str(verse.get("verse", "")),
-                text=str(verse.get("text", "")),
-            )
-        )
-        await session.commit()
 
 
 async def main() -> None:
@@ -111,11 +62,13 @@ async def main() -> None:
     logger.info("===== INICIO DO JOB DIARIO =====")
     log_event(logger, "daily_job_started", app_name=APP_NAME, env=ENV)
 
-    verses = load_verses()
-    if not verses:
-        logger.error("Nenhum versiculo encontrado.")
-        log_event(logger, "daily_job_aborted", level=logging.ERROR, reason="no_verses_available")
-        return
+    expired = await expire_overdue_subscriptions()
+    if expired:
+        logger.info(f"Assinaturas expiradas desativadas: {expired}")
+
+    cleaned = cleanup_old_audio_files(max_age_days=AUDIO_MAX_AGE_DAYS)
+    if cleaned:
+        logger.info(f"Arquivos de áudio antigos removidos: {cleaned}")
 
     user_ids = await get_active_user_ids()
     logger.info(f"Usuarios ativos encontrados: {len(user_ids)}")
@@ -130,68 +83,65 @@ async def main() -> None:
     failed = 0
 
     for user_id in user_ids:
-        try:
-            recent = await get_recent_verses(user_id)
-            verse = pick_non_repeating_verse(verses, recent, logger)
-
-            message = (
-                "📖 Versículo do dia\n\n"
-                f"{verse['book']} {verse['chapter']}:{verse['verse']}\n\n"
-                f"\"{verse['text']}\""
-            )
-
-            logger.info(
-                f"Preparando envio | telegram_user_id={user_id} | verse={verse['book']} {verse['chapter']}:{verse['verse']}"
-            )
-            log_event(
-                logger,
-                "daily_verse_send_started",
-                telegram_user_id=user_id,
-                verse_reference=f"{verse['book']} {verse['chapter']}:{verse['verse']}",
-            )
-
-            audio_asset = await ensure_named_audio_asset(
-                "versiculo",
-                verse,
-                build_tts_text(verse),
-            )
-
-            await bot.send_message(chat_id=user_id, text=message)
-
-            with open(audio_asset.path, "rb") as audio:
-                await bot.send_audio(
-                    chat_id=user_id,
-                    audio=audio,
-                    title="Versiculo do dia",
-                )
-
-            await save_verse_history(user_id, verse)
-
-            logger.info(
-                f"Envio concluido | telegram_user_id={user_id} | verse={verse['book']} {verse['chapter']}:{verse['verse']}"
-            )
-            log_event(
-                logger,
-                "daily_verse_send_completed",
-                telegram_user_id=user_id,
-                verse_reference=f"{verse['book']} {verse['chapter']}:{verse['verse']}",
-            )
-
+        success = await _send_verse_with_retry(user_id, bot, logger)
+        if success:
             sent += 1
-
-        except Exception as error:
-            logger.error(f"Erro ao enviar para {user_id}: {error}")
-            log_event(
-                logger,
-                "daily_verse_send_failed",
-                level=logging.ERROR,
-                telegram_user_id=user_id,
-                error=str(error),
-            )
+        else:
             failed += 1
 
     logger.info(f"===== FIM DO JOB DIARIO | enviados={sent} | falhas={failed} =====")
     log_event(logger, "daily_job_finished", sent=sent, failed=failed)
+
+
+async def _send_verse_with_retry(user_id: str, bot: Bot, logger: logging.Logger, max_attempts: int = 3) -> bool:
+    for attempt in range(max_attempts):
+        try:
+            verse = await get_random_verse_for_user(user_id)
+            if not verse:
+                logger.error(f"Nenhum versículo disponível para {user_id}")
+                return False
+
+            verse_ref = f"{verse['book']} {verse['chapter']}:{verse['verse']}"
+            message_text = f"📖 Versículo do dia\n\n{verse_ref}\n\n\"{verse['text']}\""
+
+            log_event(logger, "daily_verse_send_started", telegram_user_id=user_id, verse_reference=verse_ref)
+
+            audio_asset = await ensure_named_audio_asset("versiculo", verse, build_tts_text(verse))
+
+            await bot.send_message(chat_id=user_id, text=message_text)
+            with open(audio_asset.path, "rb") as audio:
+                await bot.send_audio(chat_id=user_id, audio=audio, title="Versículo do dia")
+
+            await save_verse_history(user_id, verse)
+            log_event(logger, "daily_verse_send_completed", telegram_user_id=user_id, verse_reference=verse_ref)
+            return True
+
+        except TelegramError as error:
+            err_lower = str(error).lower()
+            if any(keyword in err_lower for keyword in _FATAL_TELEGRAM_KEYWORDS):
+                logger.warning(f"Usuário {user_id} inacessível (fatal): {error}")
+                log_event(logger, "daily_verse_send_failed", level=logging.WARNING, telegram_user_id=user_id, error=str(error), fatal=True)
+                return False
+            if attempt < max_attempts - 1:
+                wait = 2 ** attempt
+                logger.warning(f"Tentativa {attempt + 1} falhou para {user_id}, retry em {wait}s: {error}")
+                await asyncio.sleep(wait)
+            else:
+                logger.error(f"Falha definitiva após {max_attempts} tentativas para {user_id}: {error}")
+                log_event(logger, "daily_verse_send_failed", level=logging.ERROR, telegram_user_id=user_id, error=str(error), attempts=max_attempts)
+                return False
+
+        except Exception as error:
+            if attempt < max_attempts - 1:
+                wait = 2 ** attempt
+                logger.warning(f"Erro inesperado na tentativa {attempt + 1} para {user_id}, retry em {wait}s: {error}")
+                await asyncio.sleep(wait)
+            else:
+                logger.error(f"Erro definitivo para {user_id}: {error}")
+                log_event(logger, "daily_verse_send_failed", level=logging.ERROR, telegram_user_id=user_id, error=str(error))
+                return False
+
+    return False
 
 
 if __name__ == "__main__":

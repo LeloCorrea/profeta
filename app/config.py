@@ -43,7 +43,6 @@ DATABASE_URL = os.getenv("DATABASE_URL", DEFAULT_DATABASE_URL)
 # 🔥 ASAAS
 ASAAS_API_KEY = os.getenv("ASAAS_API_KEY", "")
 ASAAS_ENV = os.getenv("ASAAS_ENV", "sandbox")
-ASAAS_WEBHOOK_SECRET = os.getenv("ASAAS_WEBHOOK_SECRET", "")
 ASAAS_WEBHOOK_TOKEN = os.getenv("ASAAS_WEBHOOK_TOKEN", "")
 ASAAS_PAYMENT_LINK_ID = os.getenv("ASAAS_PAYMENT_LINK_ID", "")
 ASAAS_PAYMENT_LINK_URL = os.getenv("ASAAS_PAYMENT_LINK_URL", "")
@@ -53,7 +52,7 @@ PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "")
 BOT_USERNAME = os.getenv("BOT_USERNAME", "")
 TIMEZONE = os.getenv("TIMEZONE", "America/Sao_Paulo")
 DAILY_SEND_HOUR = env_int("DAILY_SEND_HOUR", 8)
-OPENAI_EXPLANATION_MODEL = os.getenv("OPENAI_EXPLANATION_MODEL", "gpt-5.4")
+OPENAI_EXPLANATION_MODEL = os.getenv("OPENAI_EXPLANATION_MODEL", "gpt-4o-mini")
 DEFAULT_EXPLANATION_DEPTH = os.getenv("DEFAULT_EXPLANATION_DEPTH", "balanced")
 TTS_VOICE = os.getenv("TTS_VOICE", "pt-BR-AntonioNeural")
 TTS_RATE = os.getenv("TTS_RATE", "-15%")
@@ -63,3 +62,21 @@ FEATURE_INLINE_ACTIONS = env_bool("FEATURE_INLINE_ACTIONS", True)
 FEATURE_FAVORITES = env_bool("FEATURE_FAVORITES", True)
 FEATURE_JOURNEYS = env_bool("FEATURE_JOURNEYS", True)
 FEATURE_PREMIUM_PRAYER = env_bool("FEATURE_PREMIUM_PRAYER", True)
+
+# 🛡️ ADMIN
+ADMIN_TELEGRAM_IDS = os.getenv("ADMIN_TELEGRAM_IDS", "")
+
+# ⏱️ RATE LIMITS (calls per hour per user)
+RATE_LIMIT_VERSICULO = env_int("RATE_LIMIT_VERSICULO", 10)
+RATE_LIMIT_EXPLICAR = env_int("RATE_LIMIT_EXPLICAR", 5)
+RATE_LIMIT_ORAR = env_int("RATE_LIMIT_ORAR", 10)
+
+# 🧹 AUDIO CLEANUP
+AUDIO_MAX_AGE_DAYS = env_int("AUDIO_MAX_AGE_DAYS", 7)
+
+
+def is_admin(telegram_user_id: str) -> bool:
+    if not ADMIN_TELEGRAM_IDS.strip():
+        return False
+    ids = {uid.strip() for uid in ADMIN_TELEGRAM_IDS.split(",") if uid.strip()}
+    return telegram_user_id in ids

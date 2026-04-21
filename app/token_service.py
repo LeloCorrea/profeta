@@ -1,4 +1,6 @@
 import secrets
+from datetime import datetime
+
 from sqlalchemy import select
 
 from app.db import SessionLocal
@@ -30,9 +32,23 @@ async def create_activation_token() -> str:
 
 async def validate_activation_token(token_value: str):
     async with SessionLocal() as session:
-        stmt = select(ActivationToken).where(ActivationToken.token == token_value)
+        stmt = select(ActivationToken).where(
+            ActivationToken.token == token_value,
+            ActivationToken.status == "pending",
+        )
         result = await session.execute(stmt)
         return result.scalar_one_or_none()
+
+
+async def activate_subscription_via_token(user_id: str, token: str) -> None:
+    validated = await validate_activation_token(token)
+    if not validated:
+        raise ValueError("Token inválido ou expirado.")
+    consumed = await consume_activation_token(token, user_id)
+    if not consumed:
+        raise ValueError("Não foi possível consumir o token de ativação.")
+    from app.subscription_service import activate_subscription_for_user
+    await activate_subscription_for_user(telegram_user_id=user_id)
 
 
 async def consume_activation_token(token_value: str, telegram_user_id: str) -> bool:
@@ -49,6 +65,7 @@ async def consume_activation_token(token_value: str, telegram_user_id: str) -> b
 
         row.status = "used"
         row.telegram_user_id = telegram_user_id
+        row.used_at = datetime.utcnow()
 
         await session.commit()
         log_event(logger, "activation_token_consumed", telegram_user_id=telegram_user_id)

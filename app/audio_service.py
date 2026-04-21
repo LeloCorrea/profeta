@@ -1,6 +1,7 @@
 import re
 import unicodedata
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
@@ -62,6 +63,18 @@ async def ensure_named_audio_asset(prefix: str, verse: dict[str, object], text: 
     await _save_tts_audio(path, text)
     log_event(logger, "audio_generated", cache_layer=prefix, audio_key=key, voice=TTS_VOICE)
     return AudioAsset(key=key, path=path, cache_hit=False)
+
+
+def cleanup_old_audio_files(max_age_days: int = 7) -> int:
+    cutoff = datetime.utcnow() - timedelta(days=max_age_days)
+    count = 0
+    for path in AUDIO_DIR.glob("*.mp3"):
+        mtime = datetime.utcfromtimestamp(path.stat().st_mtime)
+        if mtime < cutoff:
+            path.unlink()
+            log_event(logger, "audio_file_deleted", audio_key=path.stem, age_days=max_age_days)
+            count += 1
+    return count
 
 
 async def generate_tts_audio(text: str) -> Path:

@@ -2,12 +2,21 @@ import inspect
 import logging
 from typing import Any, Optional
 
-from telegram import InputFile, Update
+from telegram import Update
 from telegram.constants import ChatAction
 from telegram.error import Conflict, TelegramError
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes
 
-from app.audio_service import AudioAsset, ensure_named_audio_asset
+from app.bot_flows import (
+    get_cached_reflection,
+    remember_last_verse,
+    resolve_last_verse,
+    send_reflection_audio,
+    send_reflection_flow,
+    send_prayer_flow,
+    send_verse_audio,
+    send_verse_flow,
+)
 from app.config import (
     APP_NAME,
     ASAAS_PAYMENT_LINK_URL,
@@ -16,17 +25,13 @@ from app.config import (
     FEATURE_FAVORITES,
     FEATURE_JOURNEYS,
     LOG_LEVEL,
+    RATE_LIMIT_EXPLICAR,
+    RATE_LIMIT_ORAR,
+    RATE_LIMIT_VERSICULO,
     TELEGRAM_BOT_TOKEN,
+    is_admin,
     is_production_environment,
     missing_settings,
-)
-from app.content_service import (
-    ReflectionContent,
-    build_default_prayer,
-    build_explanation_audio_text,
-    get_or_create_reflection_content,
-    render_prayer_message,
-    render_reflection_message,
 )
 from app.db import SessionLocal
 from app.journey_service import (
@@ -56,23 +61,30 @@ from app.premium_experience import (
     build_favorites_message,
     build_help_message,
     build_journey_keyboard,
+    build_admin_status_message,
+    build_admin_users_message,
     build_no_history_message,
     build_prayer_actions_keyboard,
-    build_prayer_unavailable_message,
+    build_rate_limit_message,
     build_reflection_actions_keyboard,
     build_reflection_unavailable_message,
+    build_search_empty_message,
+    build_search_results_message,
     build_subscription_message,
     build_subscription_required_message,
     build_verse_actions_keyboard,
     build_verse_unavailable_message,
     build_welcome_message,
 )
+from app.rate_limiter import check_rate_limit
 from app.subscription_service import (
     activate_subscription_for_user,
+    get_admin_recent_users,
+    get_admin_stats,
     get_or_create_user,
     user_has_active_subscription,
 )
-from app.token_service import consume_activation_token, validate_activation_token
+from app.token_service import activate_subscription_via_token
 from app.user_profile_service import (
     add_favorite_verse,
     get_user_explanation_depth,
@@ -80,12 +92,10 @@ from app.user_profile_service import (
     record_theme_interest,
 )
 from app.verse_service import (
-    build_tts_text,
     format_verse_reference,
     format_verse_text,
     get_last_verse_for_user,
-    get_random_verse_for_user,
-    save_verse_history,
+    search_verses_by_keyword,
 )
 
 
@@ -123,41 +133,10 @@ def get_user(update: Update):
     return update.effective_user
 
 
-def remember_last_verse(context: ContextTypes.DEFAULT_TYPE, verse: dict[str, Any]) -> None:
-    context.user_data["last_verse"] = verse
-
-
-def remember_last_reflection(context: ContextTypes.DEFAULT_TYPE, reflection: ReflectionContent) -> None:
-    context.user_data["last_reflection"] = reflection.as_dict()
-
-
-def get_cached_reflection(context: ContextTypes.DEFAULT_TYPE) -> Optional[ReflectionContent]:
-    payload = context.user_data.get("last_reflection")
-    if not isinstance(payload, dict):
-        return None
-    return ReflectionContent.from_dict(payload)
-
-
-async def resolve_last_verse(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Optional[dict[str, Any]]:
-    cached = context.user_data.get("last_verse")
-    if isinstance(cached, dict):
-        return cached
-
-    user = get_user(update)
-    if not user:
-        return None
-
-    verse = await get_last_verse_for_user(str(user.id))
-    if verse:
-        remember_last_verse(context, verse)
-    return verse
-
-
 async def ensure_user_record(update: Update) -> None:
     user = get_user(update)
     if not user:
         return
-
     try:
         await maybe_await(
             get_or_create_user(
@@ -174,194 +153,30 @@ async def ensure_user_record(update: Update) -> None:
 async def require_active_subscription(update: Update) -> bool:
     message = get_message(update)
     user = get_user(update)
-
     if not user or not message:
         return False
-
     await ensure_user_record(update)
-
     try:
         if await maybe_await(user_has_active_subscription(str(user.id))):
             return True
     except Exception:
         logger.exception("Erro ao validar assinatura ativa.")
-
     await message.reply_text(build_subscription_required_message())
     return False
 
 
-async def activate_user_from_token(user_id: str, token: str) -> None:
-    validated = await maybe_await(validate_activation_token(token))
-    if not validated:
-        raise ValueError("Token inválido ou expirado.")
-
-    consumed = await maybe_await(consume_activation_token(token, user_id))
-    if not consumed:
-        raise ValueError("Não foi possível consumir o token de ativação.")
-
-    await maybe_await(activate_subscription_for_user(telegram_user_id=user_id))
-
-
-async def send_audio_asset(
-    message,
-    asset: AudioAsset,
-    *,
-    title: str,
-    performer: str,
-    caption: Optional[str] = None,
-) -> None:
-    with asset.path.open("rb") as file_handle:
-        telegram_file = InputFile(file_handle, filename=asset.path.name)
-        await message.reply_audio(
-            audio=telegram_file,
-            title=title,
-            performer=performer,
-            caption=caption,
-        )
-
-
-async def send_verse_audio(message, verse: dict[str, Any]) -> None:
-    asset = await ensure_named_audio_asset("versiculo", verse, build_tts_text(verse))
-    await send_audio_asset(
-        message,
-        asset,
-        title=f"Áudio de {format_verse_reference(verse)}",
-        performer="Profeta",
-    )
-    log_event(
-        logger,
-        "verse_audio_sent",
-        verse_reference=format_verse_reference(verse),
-        cache_hit=asset.cache_hit,
-    )
-
-
-async def send_reflection_audio(message, verse: dict[str, Any], reflection: ReflectionContent) -> None:
-    asset = await ensure_named_audio_asset(
-        "explicacao",
-        verse,
-        build_explanation_audio_text(verse, reflection),
-    )
-    await send_audio_asset(
-        message,
-        asset,
-        title=f"Reflexão de {format_verse_reference(verse)}",
-        performer="Profeta",
-    )
-    log_event(
-        logger,
-        "reflection_audio_sent",
-        verse_reference=format_verse_reference(verse),
-        cache_hit=asset.cache_hit,
-    )
-
-
-async def send_verse_flow(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-    verse: Optional[dict[str, Any]] = None,
-) -> None:
-    message = get_message(update)
+async def _check_rate_limit(update: Update, command: str, max_calls: int) -> bool:
     user = get_user(update)
-    if not message or not user:
-        return
-
-    verse = verse or await get_random_verse_for_user(str(user.id))
-    if not verse:
-        await message.reply_text(build_verse_unavailable_message())
-        return
-
-    active_journey = None
-    if FEATURE_JOURNEYS:
-        active_journey = await get_active_journey(SessionLocal, str(user.id))
-
-    await save_verse_history(str(user.id), verse)
-    remember_last_verse(context, verse)
-
-    await message.reply_text(
-        format_verse_text(verse, active_journey.title if active_journey else None),
-        reply_markup=build_verse_actions_keyboard(),
-    )
-    log_event(
-        logger,
-        "verse_sent",
-        telegram_user_id=user.id,
-        verse_reference=format_verse_reference(verse),
-        journey=active_journey.key if active_journey else "",
-    )
-
-    await send_verse_audio(message, verse)
-
-
-async def send_reflection_flow(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     message = get_message(update)
-    user = get_user(update)
-    if not message or not user:
-        return
-
-    verse = await resolve_last_verse(update, context)
-    if not verse:
-        await message.reply_text(build_no_history_message())
-        return
-
-    depth = await get_user_explanation_depth(SessionLocal, str(user.id))
-    active_journey = None
-    if FEATURE_JOURNEYS:
-        active_journey = await get_active_journey(SessionLocal, str(user.id))
-
-    reflection = await get_or_create_reflection_content(
-        SessionLocal,
-        str(user.id),
-        verse,
-        depth=depth,
-        journey_title=active_journey.title if active_journey else None,
-    )
-    remember_last_reflection(context, reflection)
-
-    await message.reply_text(
-        render_reflection_message(verse, reflection, active_journey.title if active_journey else None),
-        reply_markup=build_reflection_actions_keyboard(),
-    )
-    log_event(
-        logger,
-        "reflection_sent",
-        telegram_user_id=user.id,
-        verse_reference=format_verse_reference(verse),
-        depth=depth,
-    )
-
-    await send_reflection_audio(message, verse, reflection)
+    if not user or not message:
+        return False
+    if not check_rate_limit(f"{user.id}:{command}", max_calls=max_calls, window_seconds=3600):
+        await message.reply_text(build_rate_limit_message())
+        return False
+    return True
 
 
-async def send_prayer_flow(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    message = get_message(update)
-    user = get_user(update)
-    if not message or not user:
-        return
-
-    verse = await resolve_last_verse(update, context)
-    if not verse:
-        await message.reply_text(build_prayer_unavailable_message())
-        return
-
-    reflection = get_cached_reflection(context)
-    prayer = reflection.prayer if reflection and reflection.prayer else build_default_prayer(verse)
-
-    active_journey = None
-    if FEATURE_JOURNEYS:
-        active_journey = await get_active_journey(SessionLocal, str(user.id))
-
-    await message.reply_text(
-        render_prayer_message(verse, prayer, active_journey.title if active_journey else None),
-        reply_markup=build_prayer_actions_keyboard(),
-    )
-    log_event(
-        logger,
-        "prayer_sent",
-        telegram_user_id=user.id,
-        verse_reference=format_verse_reference(verse),
-    )
-
+# ── Handlers ─────────────────────────────────────────────────────────────────
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     message = get_message(update)
@@ -374,7 +189,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     token = context.args[0].strip() if context.args else None
     if token:
         try:
-            await activate_user_from_token(str(user.id), token)
+            await activate_subscription_via_token(str(user.id), token)
             await message.reply_text(build_activation_success_message())
             return
         except Exception:
@@ -402,11 +217,9 @@ async def meuultimo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     verse = await resolve_last_verse(update, context)
     if not message:
         return
-
     if not verse:
         await message.reply_text(build_no_history_message())
         return
-
     await message.reply_text(format_verse_text(verse), reply_markup=build_verse_actions_keyboard())
 
 
@@ -414,10 +227,10 @@ async def versiculo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     message = get_message(update)
     if not message:
         return
-
     if not await require_active_subscription(update):
         return
-
+    if not await _check_rate_limit(update, "versiculo", RATE_LIMIT_VERSICULO):
+        return
     await message.chat.send_action(ChatAction.TYPING)
     try:
         await send_verse_flow(update, context)
@@ -433,10 +246,10 @@ async def explicar(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     message = get_message(update)
     if not message:
         return
-
     if not await require_active_subscription(update):
         return
-
+    if not await _check_rate_limit(update, "explicar", RATE_LIMIT_EXPLICAR):
+        return
     await message.chat.send_action(ChatAction.TYPING)
     try:
         await send_reflection_flow(update, context)
@@ -448,19 +261,38 @@ async def explicar(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await message.reply_text(build_reflection_unavailable_message())
 
 
+async def reflexao(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    message = get_message(update)
+    if not message:
+        return
+    if not await require_active_subscription(update):
+        return
+    if not await _check_rate_limit(update, "reflexao", RATE_LIMIT_EXPLICAR):
+        return
+    await message.chat.send_action(ChatAction.TYPING)
+    try:
+        await send_reflection_flow(update, context, depth_override="deep")
+    except TelegramError:
+        logger.exception("Falha ao enviar reflexão profunda via Telegram.")
+        await message.reply_text(build_audio_unavailable_message())
+    except Exception:
+        logger.exception("Falha ao gerar reflexão profunda.")
+        await message.reply_text(build_reflection_unavailable_message())
+
+
 async def orar(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     message = get_message(update)
     if not message:
         return
-
     if not await require_active_subscription(update):
         return
-
+    if not await _check_rate_limit(update, "orar", RATE_LIMIT_ORAR):
+        return
     try:
         await send_prayer_flow(update, context)
     except Exception:
         logger.exception("Falha ao enviar oração premium.")
-        await message.reply_text(build_prayer_unavailable_message())
+        await message.reply_text(build_no_history_message())
 
 
 async def favoritar(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -468,12 +300,10 @@ async def favoritar(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = get_user(update)
     if not message or not user or not FEATURE_FAVORITES:
         return
-
     verse = await resolve_last_verse(update, context)
     if not verse:
         await message.reply_text(build_no_history_message())
         return
-
     added = await add_favorite_verse(SessionLocal, str(user.id), verse)
     reference = format_verse_reference(verse)
     await message.reply_text(
@@ -486,12 +316,10 @@ async def favoritos(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = get_user(update)
     if not message or not user or not FEATURE_FAVORITES:
         return
-
     items = await list_recent_favorites(SessionLocal, str(user.id))
     if not items:
         await message.reply_text(build_favorites_empty_message())
         return
-
     await message.reply_text(build_favorites_message(items))
 
 
@@ -500,11 +328,9 @@ async def trilhas(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = get_user(update)
     if not message or not FEATURE_JOURNEYS:
         return
-
     active = None
     if user:
         active = await get_active_journey(SessionLocal, str(user.id))
-
     await message.reply_text(
         build_journey_catalog_message(active.title if active else None),
         reply_markup=build_journey_keyboard(list(JOURNEYS.values())),
@@ -516,20 +342,79 @@ async def continuar(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = get_user(update)
     if not message or not user or not FEATURE_JOURNEYS:
         return
-
     touchpoint = await build_active_journey_touchpoint(SessionLocal, str(user.id))
     if not touchpoint:
         await trilhas(update, context)
         return
-
     await message.reply_text(touchpoint, reply_markup=build_verse_actions_keyboard())
+
+
+async def buscar(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    message = get_message(update)
+    if not message:
+        return
+    if not await require_active_subscription(update):
+        return
+    keyword = " ".join(context.args).strip() if context.args else ""
+    if not keyword:
+        await message.reply_text("Use /buscar [tema] para encontrar um versículo. Exemplo: /buscar paz")
+        return
+    await message.chat.send_action(ChatAction.TYPING)
+    try:
+        results = await search_verses_by_keyword(keyword, limit=3)
+        if not results:
+            await message.reply_text(build_search_empty_message(keyword))
+            return
+        await message.reply_text(
+            build_search_results_message(keyword, results),
+            reply_markup=build_verse_actions_keyboard(),
+        )
+        log_event(logger, "buscar_sent", keyword=keyword, results=len(results))
+    except Exception:
+        logger.exception("Falha ao buscar versículos.")
+        await message.reply_text(build_verse_unavailable_message())
+
+
+async def meuplano(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    message = get_message(update)
+    user = get_user(update)
+    if not message or not user:
+        return
+    from app.subscription_service import get_subscription_info
+    from app.premium_experience import build_meuplano_message
+    try:
+        info = await get_subscription_info(str(user.id))
+        await message.reply_text(build_meuplano_message(info))
+    except Exception:
+        logger.exception("Falha ao consultar plano do usuário.")
+        await message.reply_text("Não consegui consultar seu plano agora. Tente novamente em instantes.")
+
+
+async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user = get_user(update)
+    message = get_message(update)
+    if not user or not message:
+        return
+    if not is_admin(str(user.id)):
+        return
+    subcommand = context.args[0].lower() if context.args else "status"
+    try:
+        if subcommand == "status":
+            stats = await get_admin_stats()
+            await message.reply_text(build_admin_status_message(stats))
+        elif subcommand == "usuarios":
+            users = await get_admin_recent_users()
+            await message.reply_text(build_admin_users_message(users))
+        else:
+            await message.reply_text("Subcomandos disponíveis: status, usuarios")
+    except Exception:
+        logger.exception("Falha ao executar comando admin.")
 
 
 async def handle_interactive_action(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     if not query:
         return
-
     await query.answer()
     data = query.data or ""
     user = get_user(update)
@@ -602,13 +487,17 @@ def main() -> None:
     application.add_handler(CommandHandler("ajuda", ajuda))
     application.add_handler(CommandHandler("versiculo", versiculo))
     application.add_handler(CommandHandler("explicar", explicar))
+    application.add_handler(CommandHandler("reflexao", reflexao))
     application.add_handler(CommandHandler("orar", orar))
     application.add_handler(CommandHandler("meuultimo", meuultimo))
     application.add_handler(CommandHandler("assinar", assinar))
+    application.add_handler(CommandHandler("meuplano", meuplano))
     application.add_handler(CommandHandler("favoritar", favoritar))
     application.add_handler(CommandHandler("favoritos", favoritos))
     application.add_handler(CommandHandler("trilhas", trilhas))
     application.add_handler(CommandHandler("continuar", continuar))
+    application.add_handler(CommandHandler("buscar", buscar))
+    application.add_handler(CommandHandler("admin", admin))
     application.add_handler(CallbackQueryHandler(handle_interactive_action, pattern=r"^(action:|journey:).*"))
     application.add_error_handler(on_error)
 

@@ -14,7 +14,6 @@ from app.observability import get_logger, log_event
 logger = get_logger(__name__)
 BIBLE_PATH = Path("data/bible/bible.json")
 RECENT_VERSE_BLOCK_SIZE = 30
-DB_RANDOM_TRIES = 40
 
 
 @lru_cache(maxsize=1)
@@ -104,42 +103,20 @@ async def get_random_verse_from_db(
     excluded_refs: Optional[set[tuple[str, str, str]]] = None,
 ) -> Optional[dict[str, Any]]:
     excluded_refs = excluded_refs or set()
+    fetch_limit = max(1, len(excluded_refs) + 5)
 
     async with SessionLocal() as session:
-        total_stmt = select(func.count()).select_from(Verse)
-        total = (await session.execute(total_stmt)).scalar_one_or_none() or 0
+        stmt = select(Verse).order_by(func.random()).limit(fetch_limit)
+        candidates = [normalize_verse(v) for v in (await session.execute(stmt)).scalars().all()]
 
-        if total <= 0:
-            return None
+    if not candidates:
+        return None
 
-        for _ in range(min(DB_RANDOM_TRIES, total)):
-            offset = random.randint(0, total - 1)
-            stmt = select(Verse).offset(offset).limit(1)
-            verse_obj = (await session.execute(stmt)).scalar_one_or_none()
-
-            if not verse_obj:
-                continue
-
-            verse = normalize_verse(verse_obj)
-            if verse_ref_tuple(verse) not in excluded_refs:
-                log_event(logger, "verse_selected_from_db", verse_reference=format_verse_reference(verse), strategy="random_offset")
-                return verse
-
-        stmt = select(Verse).limit(min(total, 500))
-        verses = [normalize_verse(item) for item in (await session.execute(stmt)).scalars().all()]
-        filtered = [verse for verse in verses if verse_ref_tuple(verse) not in excluded_refs]
-
-        if filtered:
-            verse = random.choice(filtered)
-            log_event(logger, "verse_selected_from_db", verse_reference=format_verse_reference(verse), strategy="filtered_fallback")
-            return verse
-
-        if verses:
-            verse = random.choice(verses)
-            log_event(logger, "verse_selected_from_db", verse_reference=format_verse_reference(verse), strategy="full_fallback")
-            return verse
-
-    return None
+    available = [v for v in candidates if verse_ref_tuple(v) not in excluded_refs]
+    verse = available[0] if available else candidates[0]
+    strategy = "random_order" if available else "random_order_fallback"
+    log_event(logger, "verse_selected_from_db", verse_reference=format_verse_reference(verse), strategy=strategy)
+    return verse
 
 
 def get_random_verse_from_json(
@@ -183,6 +160,26 @@ async def save_verse_history(telegram_user_id: str, verse: dict[str, Any]) -> No
         telegram_user_id=telegram_user_id,
         verse_reference=format_verse_reference(verse),
     )
+
+
+async def search_verses_by_keyword(keyword: str, limit: int = 5) -> list[dict[str, Any]]:
+    async with SessionLocal() as session:
+        stmt = (
+            select(Verse)
+            .where(Verse.text.ilike(f"%{keyword}%"))
+            .order_by(func.random())
+            .limit(limit)
+        )
+        results = (await session.execute(stmt)).scalars().all()
+
+    if results:
+        return [normalize_verse(v) for v in results]
+
+    kw = keyword.lower()
+    matches = [normalize_verse(v) for v in load_verses() if kw in v.get("text", "").lower()]
+    if matches:
+        return random.sample(matches, min(limit, len(matches)))
+    return []
 
 
 async def get_last_verse_for_user(telegram_user_id: str) -> Optional[dict[str, Any]]:

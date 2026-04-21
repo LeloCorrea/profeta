@@ -4,6 +4,7 @@ from typing import Any
 from sqlalchemy import select
 
 from app.config import DEFAULT_EXPLANATION_DEPTH
+from app.db_helpers import get_or_create_user_in_session
 from app.models import FavoriteVerse, User, UserPreference, UserThemeInterest
 from app.observability import get_logger, log_event
 
@@ -11,20 +12,9 @@ from app.observability import get_logger, log_event
 logger = get_logger(__name__)
 
 
-async def _get_or_create_user(session, telegram_user_id: str) -> User:
-    user = await session.scalar(select(User).where(User.telegram_user_id == str(telegram_user_id)))
-    if user:
-        return user
-
-    user = User(telegram_user_id=str(telegram_user_id), status="active")
-    session.add(user)
-    await session.flush()
-    return user
-
-
 async def get_or_create_user_preference(session_factory, telegram_user_id: str) -> UserPreference:
     async with session_factory() as session:
-        user = await _get_or_create_user(session, telegram_user_id)
+        user = await get_or_create_user_in_session(session, telegram_user_id)
         preference = await session.scalar(
             select(UserPreference).where(UserPreference.user_id == user.id)
         )
@@ -54,7 +44,7 @@ async def record_theme_interest(
     source: str = "journey",
 ) -> None:
     async with session_factory() as session:
-        user = await _get_or_create_user(session, telegram_user_id)
+        user = await get_or_create_user_in_session(session, telegram_user_id)
         preference = await session.scalar(
             select(UserPreference).where(UserPreference.user_id == user.id)
         )
@@ -84,7 +74,7 @@ async def record_theme_interest(
 
 async def add_favorite_verse(session_factory, telegram_user_id: str, verse: dict[str, Any]) -> bool:
     async with session_factory() as session:
-        user = await _get_or_create_user(session, telegram_user_id)
+        user = await get_or_create_user_in_session(session, telegram_user_id)
 
         existing = await session.scalar(
             select(FavoriteVerse).where(

@@ -1,3 +1,4 @@
+import html as html_lib
 import os
 from contextlib import asynccontextmanager
 from typing import Optional
@@ -159,8 +160,9 @@ async def asaas_webhook(
 @app.get("/claim/{token}", response_class=HTMLResponse)
 async def claim_token_page(token: str):
     telegram_url = build_telegram_start_link(token)
+    safe_url = html_lib.escape(telegram_url)
 
-    html = f"""
+    page = f"""
     <html>
       <head>
         <meta charset="utf-8">
@@ -170,16 +172,16 @@ async def claim_token_page(token: str):
         <h1>Pagamento aprovado</h1>
         <p>Seu acesso ao Profeta está pronto para ser ativado.</p>
         <p>
-          <a href="{telegram_url}" style="display:inline-block;padding:12px 16px;background:#2AABEE;color:white;text-decoration:none;border-radius:8px;">
+          <a href="{safe_url}" style="display:inline-block;padding:12px 16px;background:#2AABEE;color:white;text-decoration:none;border-radius:8px;">
             Abrir no Telegram e ativar
           </a>
         </p>
         <p>Se o botão não abrir, copie e abra este link no navegador:</p>
-        <pre>{telegram_url}</pre>
+        <pre>{safe_url}</pre>
       </body>
     </html>
     """
-    return HTMLResponse(content=html)
+    return HTMLResponse(content=page)
 
 
 @app.get("/go/{token}")
