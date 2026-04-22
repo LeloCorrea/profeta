@@ -9,7 +9,10 @@ from app.content_service import (
     ReflectionContent,
     build_default_prayer,
     build_explanation_audio_text,
+    build_reflection_audio_text,
+    get_or_create_explanation_content,
     get_or_create_reflection_content,
+    render_explanation_message,
     render_prayer_message,
     render_reflection_message,
 )
@@ -37,6 +40,8 @@ from app.verse_service import (
 
 logger = get_logger(__name__)
 
+
+# ── Context helpers ───────────────────────────────────────────────────────────
 
 def remember_last_verse(context: ContextTypes.DEFAULT_TYPE, verse: dict[str, Any]) -> None:
     context.user_data["last_verse"] = verse
@@ -66,6 +71,8 @@ async def resolve_last_verse(update: Update, context: ContextTypes.DEFAULT_TYPE)
     return verse
 
 
+# ── Low-level audio sender ────────────────────────────────────────────────────
+
 async def send_audio_asset(
     message,
     asset: AudioAsset,
@@ -84,6 +91,8 @@ async def send_audio_asset(
         )
 
 
+# ── Verse audio ───────────────────────────────────────────────────────────────
+
 async def send_verse_audio(message, verse: dict[str, Any]) -> None:
     asset = await ensure_named_audio_asset("versiculo", verse, build_tts_text(verse))
     await send_audio_asset(
@@ -100,33 +109,51 @@ async def send_verse_audio(message, verse: dict[str, Any]) -> None:
     )
 
 
-async def send_reflection_audio(message, verse: dict[str, Any], reflection: ReflectionContent) -> None:
+# ── Explanation audio (/explicar) ─────────────────────────────────────────────
+
+async def send_explanation_audio(message, verse: dict[str, Any], reflection: ReflectionContent) -> None:
     audio_text = build_explanation_audio_text(verse, reflection)
     if not audio_text:
-        logger.info("[Áudio] Reflexão fallback — áudio omitido para %s", format_verse_reference(verse))
+        logger.info("[Áudio] Explicação fallback — áudio omitido para %s", format_verse_reference(verse))
         return
-    # Chaves de cache separadas para não sobrepor áudio balanced com deep
-    prefix = "reflexao" if reflection.depth == "deep" else "explicacao"
-    asset = await ensure_named_audio_asset(prefix, verse, audio_text)
-    title = (
-        f"Reflexão de {format_verse_reference(verse)}"
-        if reflection.depth == "deep"
-        else f"Explicação de {format_verse_reference(verse)}"
-    )
+    asset = await ensure_named_audio_asset("explicacao", verse, audio_text)
     await send_audio_asset(
         message,
         asset,
-        title=title,
+        title=f"Explicação de {format_verse_reference(verse)}",
+        performer="Profeta",
+    )
+    log_event(
+        logger,
+        "explanation_audio_sent",
+        verse_reference=format_verse_reference(verse),
+        cache_hit=asset.cache_hit,
+    )
+
+
+# ── Reflection audio (/reflexao) ──────────────────────────────────────────────
+
+async def send_reflection_audio(message, verse: dict[str, Any], reflection: ReflectionContent) -> None:
+    audio_text = build_reflection_audio_text(verse, reflection)
+    if not audio_text:
+        logger.info("[Áudio] Reflexão fallback — áudio omitido para %s", format_verse_reference(verse))
+        return
+    asset = await ensure_named_audio_asset("reflexao", verse, audio_text)
+    await send_audio_asset(
+        message,
+        asset,
+        title=f"Reflexão de {format_verse_reference(verse)}",
         performer="Profeta",
     )
     log_event(
         logger,
         "reflection_audio_sent",
         verse_reference=format_verse_reference(verse),
-        depth=reflection.depth,
         cache_hit=asset.cache_hit,
     )
 
+
+# ── Prayer audio ──────────────────────────────────────────────────────────────
 
 async def send_prayer_audio(message, verse: dict[str, Any], prayer: str) -> None:
     if not prayer:
@@ -147,6 +174,8 @@ async def send_prayer_audio(message, verse: dict[str, Any], prayer: str) -> None
         cache_hit=asset.cache_hit,
     )
 
+
+# ── Verse flow ────────────────────────────────────────────────────────────────
 
 async def send_verse_flow(
     update: Update,
@@ -185,10 +214,11 @@ async def send_verse_flow(
     await send_verse_audio(message, verse)
 
 
-async def send_reflection_flow(
+# ── Explanation flow (/explicar) ──────────────────────────────────────────────
+
+async def send_explanation_flow(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
-    depth_override: Optional[str] = None,
 ) -> None:
     message = update.effective_message
     user = update.effective_user
@@ -200,7 +230,48 @@ async def send_reflection_flow(
         await message.reply_text(build_no_history_message())
         return
 
-    depth = depth_override or await get_user_explanation_depth(SessionLocal, str(user.id))
+    active_journey = None
+    if FEATURE_JOURNEYS:
+        active_journey = await get_active_journey(SessionLocal, str(user.id))
+
+    reflection = await get_or_create_explanation_content(
+        SessionLocal,
+        str(user.id),
+        verse,
+        journey_title=active_journey.title if active_journey else None,
+    )
+    remember_last_reflection(context, reflection)
+
+    await message.reply_text(
+        render_explanation_message(verse, reflection, active_journey.title if active_journey else None),
+        reply_markup=build_explanation_actions_keyboard(),
+    )
+    log_event(
+        logger,
+        "explanation_sent",
+        telegram_user_id=user.id,
+        verse_reference=format_verse_reference(verse),
+    )
+
+    await send_explanation_audio(message, verse, reflection)
+
+
+# ── Reflection flow (/reflexao) ───────────────────────────────────────────────
+
+async def send_reflection_flow(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    message = update.effective_message
+    user = update.effective_user
+    if not message or not user:
+        return
+
+    verse = await resolve_last_verse(update, context)
+    if not verse:
+        await message.reply_text(build_no_history_message())
+        return
+
     active_journey = None
     if FEATURE_JOURNEYS:
         active_journey = await get_active_journey(SessionLocal, str(user.id))
@@ -209,30 +280,25 @@ async def send_reflection_flow(
         SessionLocal,
         str(user.id),
         verse,
-        depth=depth,
         journey_title=active_journey.title if active_journey else None,
     )
     remember_last_reflection(context, reflection)
 
-    keyboard = (
-        build_reflection_actions_keyboard()
-        if depth == "deep"
-        else build_explanation_actions_keyboard()
-    )
     await message.reply_text(
         render_reflection_message(verse, reflection, active_journey.title if active_journey else None),
-        reply_markup=keyboard,
+        reply_markup=build_reflection_actions_keyboard(),
     )
     log_event(
         logger,
         "reflection_sent",
         telegram_user_id=user.id,
         verse_reference=format_verse_reference(verse),
-        depth=depth,
     )
 
     await send_reflection_audio(message, verse, reflection)
 
+
+# ── Prayer flow ───────────────────────────────────────────────────────────────
 
 async def send_prayer_flow(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     message = update.effective_message

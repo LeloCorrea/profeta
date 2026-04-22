@@ -52,7 +52,7 @@ async def test_audio_service_cache_miss_then_hit(tmp_audio_dirs, monkeypatch, sa
 
     audio_dir = tmp_audio_dirs
 
-    async def fake_save_tts_audio(path, text):
+    async def fake_save_tts_audio(path, text, cfg=None):
         path.write_bytes(b"fake-audio")
 
     monkeypatch.setattr(audio_service, "_save_tts_audio", fake_save_tts_audio)
@@ -77,7 +77,7 @@ async def test_audio_service_normalizes_accents_in_filename(tmp_audio_dirs, monk
         "text": "Teste",
     }
 
-    async def fake_save_tts_audio(path, text):
+    async def fake_save_tts_audio(path, text, cfg=None):
         path.write_bytes(b"fake-audio")
 
     monkeypatch.setattr(audio_service, "_save_tts_audio", fake_save_tts_audio)
@@ -112,7 +112,7 @@ async def test_content_service_generates_structured_reflection(monkeypatch, samp
 
     monkeypatch.setattr(content_service, "_get_openai_client", lambda: FakeClient())
 
-    reflection = await content_service.generate_reflection_content(sample_verse, depth="balanced")
+    reflection = await content_service.generate_explanation_content(sample_verse)
 
     assert reflection.explanation == "Essencia"
     assert reflection.prayer == "Oracao"
@@ -144,7 +144,7 @@ async def test_content_service_falls_back_for_invalid_json(monkeypatch, sample_v
 
     monkeypatch.setattr(content_service, "_get_openai_client", lambda: FakeClient())
 
-    reflection = await content_service.generate_reflection_content(sample_verse, depth="short")
+    reflection = await content_service.generate_explanation_content(sample_verse)
 
     assert reflection.is_fallback is True
     assert reflection.prayer
@@ -156,7 +156,7 @@ async def test_content_service_persists_and_reuses_explanation(db_sessionmaker, 
 
     calls = {"count": 0}
 
-    async def fake_generate_reflection_content(verse, depth="balanced", journey_title=None):
+    async def fake_generate_explanation_content(verse, journey_title=None, cfg=None):
         calls["count"] += 1
         return content_service.ReflectionContent(
             explanation="Explicacao persistida com detalhes suficientes para passar na validacao de cache que exige ao menos cem caracteres no texto.",
@@ -164,22 +164,20 @@ async def test_content_service_persists_and_reuses_explanation(db_sessionmaker, 
             application="Aplicacao original.",
             prayer="Oracao original.",
             summary="Resumo original.",
-            depth=depth,
+            depth="balanced",
         )
 
-    monkeypatch.setattr(content_service, "generate_reflection_content", fake_generate_reflection_content)
+    monkeypatch.setattr(content_service, "generate_explanation_content", fake_generate_explanation_content)
 
-    first = await content_service.get_or_create_reflection_content(
+    first = await content_service.get_or_create_explanation_content(
         db_sessionmaker,
         "u-cache",
         sample_verse,
-        depth="balanced",
     )
-    second = await content_service.get_or_create_reflection_content(
+    second = await content_service.get_or_create_explanation_content(
         db_sessionmaker,
         "u-cache",
         sample_verse,
-        depth="balanced",
     )
 
     assert calls["count"] == 1
@@ -534,7 +532,7 @@ async def test_send_reflection_audio_skips_when_fallback(
 
     tts_called = {"count": 0}
 
-    async def fake_save_tts(path, text):
+    async def fake_save_tts(path, text, cfg=None):
         tts_called["count"] += 1
 
     monkeypatch.setattr(audio_service, "_save_tts_audio", fake_save_tts)

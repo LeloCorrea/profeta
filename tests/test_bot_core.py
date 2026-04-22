@@ -101,26 +101,22 @@ async def test_explicar_flow_uses_last_verse_and_sends_reflection_audio(
     import app.bot_flows as bot_flows_module
     from tests.conftest import build_fake_reflection
 
-    async def fake_send_reflection_audio(message, verse, reflection):
+    async def fake_send_explanation_audio(message, verse, reflection):
         message.audios.append({"title": "audio-explicacao", "verse": verse, "reflection": reflection})
 
     async def fake_user_has_active_subscription(user_id):
         return True
 
-    async def fake_get_or_create_reflection_content(session_factory, user_id, verse, depth, journey_title):
-        return build_fake_reflection(depth)
+    async def fake_get_or_create_explanation_content(session_factory, user_id, verse, *, journey_title=None):
+        return build_fake_reflection("balanced")
 
     async def fake_get_active_journey(session_factory, user_id):
         return None
 
-    async def fake_get_user_explanation_depth(session_factory, user_id):
-        return "balanced"
-
     monkeypatch.setattr(bot_module, "user_has_active_subscription", fake_user_has_active_subscription)
-    monkeypatch.setattr(bot_flows_module, "get_or_create_reflection_content", fake_get_or_create_reflection_content)
-    monkeypatch.setattr(bot_flows_module, "send_reflection_audio", fake_send_reflection_audio)
+    monkeypatch.setattr(bot_flows_module, "get_or_create_explanation_content", fake_get_or_create_explanation_content)
+    monkeypatch.setattr(bot_flows_module, "send_explanation_audio", fake_send_explanation_audio)
     monkeypatch.setattr(bot_flows_module, "get_active_journey", fake_get_active_journey)
-    monkeypatch.setattr(bot_flows_module, "get_user_explanation_depth", fake_get_user_explanation_depth)
     fake_context.user_data["last_verse"] = sample_verse
 
     await bot_module.explicar(fake_update, fake_context)
@@ -149,15 +145,11 @@ async def test_explicar_returns_human_error_message_on_failure(fake_update, fake
     async def raise_error(*args, **kwargs):
         raise RuntimeError("falha-openai")
 
-    async def fake_get_user_explanation_depth(session_factory, user_id):
-        return "balanced"
-
     async def fake_get_active_journey(session_factory, user_id):
         return None
 
     monkeypatch.setattr(bot_module, "user_has_active_subscription", lambda user_id: True)
-    monkeypatch.setattr(bot_flows_module, "get_or_create_reflection_content", raise_error)
-    monkeypatch.setattr(bot_flows_module, "get_user_explanation_depth", fake_get_user_explanation_depth)
+    monkeypatch.setattr(bot_flows_module, "get_or_create_explanation_content", raise_error)
     monkeypatch.setattr(bot_flows_module, "get_active_journey", fake_get_active_journey)
     fake_context.user_data["last_verse"] = sample_verse
 
@@ -333,11 +325,8 @@ async def test_reflexao_uses_deep_depth(fake_update, fake_context, monkeypatch, 
     import app.bot_flows as bot_flows_module
     from tests.conftest import build_fake_reflection
 
-    depths_used = []
-
-    async def fake_get_or_create_reflection_content(session_factory, user_id, verse, depth, journey_title):
-        depths_used.append(depth)
-        return build_fake_reflection(depth)
+    async def fake_get_or_create_reflection_content(session_factory, user_id, verse, *, journey_title=None):
+        return build_fake_reflection("deep")
 
     async def fake_send_reflection_audio(message, verse, reflection):
         pass
@@ -345,19 +334,14 @@ async def test_reflexao_uses_deep_depth(fake_update, fake_context, monkeypatch, 
     async def fake_get_active_journey(session_factory, user_id):
         return None
 
-    async def fake_get_user_explanation_depth(session_factory, user_id):
-        return "balanced"
-
     monkeypatch.setattr(bot_module, "user_has_active_subscription", lambda uid: True)
     monkeypatch.setattr(bot_flows_module, "get_or_create_reflection_content", fake_get_or_create_reflection_content)
     monkeypatch.setattr(bot_flows_module, "send_reflection_audio", fake_send_reflection_audio)
     monkeypatch.setattr(bot_flows_module, "get_active_journey", fake_get_active_journey)
-    monkeypatch.setattr(bot_flows_module, "get_user_explanation_depth", fake_get_user_explanation_depth)
     fake_context.user_data["last_verse"] = sample_verse
 
     await bot_module.reflexao(fake_update, fake_context)
 
-    assert depths_used == ["deep"]
     assert any("Reflexão sobre Salmos 23:1" in r["text"] for r in fake_update.effective_message.replies)
 
 
@@ -373,14 +357,14 @@ async def test_reflexao_audio_uses_reflexao_prefix_not_explicacao(
 
     prefixes_used = []
 
-    async def spy_ensure(prefix, verse, text):
+    async def spy_ensure(prefix, verse, text, cfg=None):
         prefixes_used.append(prefix)
         path = tmp_audio_dirs / f"{prefix}_spy.mp3"
         path.write_bytes(b"fake")
         return AudioAsset(key=prefix, path=path, cache_hit=False)
 
-    async def fake_get_or_create(sf, uid, verse, depth, journey_title):
-        return build_fake_reflection(depth)
+    async def fake_get_or_create(sf, uid, verse, *, journey_title=None):
+        return build_fake_reflection("deep")
 
     async def fake_active_subscription(uid):
         return True
@@ -388,13 +372,9 @@ async def test_reflexao_audio_uses_reflexao_prefix_not_explicacao(
     async def fake_get_active_journey(sf, uid):
         return None
 
-    async def fake_get_depth(sf, uid):
-        return "balanced"
-
     monkeypatch.setattr(bot_module, "user_has_active_subscription", fake_active_subscription)
     monkeypatch.setattr(bot_flows_module, "get_or_create_reflection_content", fake_get_or_create)
     monkeypatch.setattr(bot_flows_module, "get_active_journey", fake_get_active_journey)
-    monkeypatch.setattr(bot_flows_module, "get_user_explanation_depth", fake_get_depth)
     monkeypatch.setattr(bot_flows_module, "ensure_named_audio_asset", spy_ensure)
     fake_context.user_data["last_verse"] = sample_verse
 
@@ -416,7 +396,7 @@ async def test_orar_sends_prayer_audio(
 
     prefixes_used = []
 
-    async def spy_ensure(prefix, verse, text):
+    async def spy_ensure(prefix, verse, text, cfg=None):
         prefixes_used.append(prefix)
         path = tmp_audio_dirs / f"{prefix}_spy.mp3"
         path.write_bytes(b"fake")

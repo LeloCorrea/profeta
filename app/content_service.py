@@ -33,10 +33,12 @@ except Exception:
 logger = get_logger(__name__)
 if __name__ == "app.content_service":
     if os.getenv("OPENAI_API_KEY"):
-        logger.info("OPENAI_API_KEY carregada para geração de explicação.")
+        logger.info("OPENAI_API_KEY carregada.")
     else:
-        logger.warning("OPENAI_API_KEY NÃO encontrada! Geração de explicação não irá funcionar.")
+        logger.warning("OPENAI_API_KEY NÃO encontrada! Geração de conteúdo não irá funcionar.")
 
+
+# ── Data model ────────────────────────────────────────────────────────────────
 
 @dataclass
 class ReflectionContent:
@@ -64,22 +66,19 @@ class ReflectionContent:
         )
 
 
+# ── Internal helpers ──────────────────────────────────────────────────────────
+
 def _sanitize_openai_text(text: str) -> str:
     if not text:
         return ""
-
     t = text.strip().lstrip()
-
     if "```" in t:
         parts = t.split("```")
         if len(parts) >= 3:
             t = parts[1].strip()
-
     lower = t.lower()
     if lower.startswith("json"):
-        t = t[4:]
-        t = t.lstrip(": \n\r\t")
-
+        t = t[4:].lstrip(": \n\r\t")
     return t.strip()
 
 
@@ -137,11 +136,7 @@ def _fallback_reflection(verse: dict[str, Any], depth: str) -> ReflectionContent
     )
 
 
-def _build_cached_reflection(
-    verse: dict[str, Any],
-    explanation: str,
-    depth: str,
-) -> ReflectionContent:
+def _build_cached_reflection(verse: dict[str, Any], explanation: str, depth: str) -> ReflectionContent:
     reflection = _fallback_reflection(verse, depth)
     cleaned_explanation = explanation.strip()
     if cleaned_explanation:
@@ -186,21 +181,31 @@ def _build_prompts(verse: dict[str, Any], depth: str, journey_title: Optional[st
     return system_prompt, user_prompt
 
 
-async def generate_reflection_content(
+# ── Core generator (private) ──────────────────────────────────────────────────
+
+async def _generate_content(
     verse: dict[str, Any],
-    depth: str = "balanced",
-    journey_title: Optional[str] = None,
-    cfg: Optional[TenantConfig] = None,
+    depth: str,
+    mode: str,
+    journey_title: Optional[str],
+    cfg: Optional[TenantConfig],
 ) -> ReflectionContent:
+    """
+    Unified OpenAI generator. `mode` is "explanation" or "reflection" and
+    drives log event names and human-readable log messages.
+    """
     _cfg = cfg or CURRENT_TENANT
+    label = "reflexão" if mode == "reflection" else "explicação"
+    start_event = f"{mode}_generation_started"
+    done_event = f"{mode}_generated"
 
     def _run() -> str:
         client = _get_openai_client()
         system_prompt, user_prompt = _build_prompts(verse, depth, journey_title)
         max_tokens = 800 if depth == "deep" else 512
         logger.info(
-            "[IA] Gerando explicação via OpenAI para %s %s:%s (depth=%s)",
-            verse["book"], verse["chapter"], verse["verse"], depth,
+            "[IA] Gerando %s via OpenAI para %s %s:%s",
+            label, verse["book"], verse["chapter"], verse["verse"],
         )
         response = client.chat.completions.create(
             model=_cfg.openai_model or OPENAI_EXPLANATION_MODEL,
@@ -215,9 +220,8 @@ async def generate_reflection_content(
 
     log_event(
         logger,
-        "reflection_generation_started",
+        start_event,
         verse_reference=format_verse_reference(verse),
-        depth=depth,
         journey_title=journey_title or "",
     )
 
@@ -225,7 +229,6 @@ async def generate_reflection_content(
     logger.info("[IA] Resposta OpenAI (primeiros 200 chars): %s", text[:200] if text else "<vazio>")
 
     clean_text = _sanitize_openai_text(text or "")
-
     if not clean_text or len(clean_text) < 20:
         logger.error("[IA] Resposta OpenAI inválida ou vazia. Usando fallback.")
         return _fallback_reflection(verse, depth)
@@ -235,9 +238,8 @@ async def generate_reflection_content(
         reflection = ReflectionContent.from_dict({**payload, "depth": depth})
         log_event(
             logger,
-            "reflection_generated",
+            done_event,
             verse_reference=format_verse_reference(verse),
-            depth=depth,
             journey_title=journey_title or "",
             source="openai",
         )
@@ -246,6 +248,28 @@ async def generate_reflection_content(
         logger.error("[IA] Erro ao parsear resposta OpenAI: %s | texto: %s", e, clean_text[:200])
         return _fallback_reflection(verse, depth)
 
+
+# ── Public generators ─────────────────────────────────────────────────────────
+
+async def generate_explanation_content(
+    verse: dict[str, Any],
+    journey_title: Optional[str] = None,
+    cfg: Optional[TenantConfig] = None,
+) -> ReflectionContent:
+    """Generate a balanced biblical explanation for /explicar."""
+    return await _generate_content(verse, "balanced", "explanation", journey_title, cfg)
+
+
+async def generate_reflection_content(
+    verse: dict[str, Any],
+    journey_title: Optional[str] = None,
+    cfg: Optional[TenantConfig] = None,
+) -> ReflectionContent:
+    """Generate a deep spiritual reflection for /reflexao."""
+    return await _generate_content(verse, "deep", "reflection", journey_title, cfg)
+
+
+# ── Cache validation ──────────────────────────────────────────────────────────
 
 def is_valid_explanation(text: str) -> bool:
     if not text or len(text) < 100:
@@ -256,14 +280,20 @@ def is_valid_explanation(text: str) -> bool:
     return True
 
 
-async def get_or_create_reflection_content(
+# ── DB cache accessor (private) ───────────────────────────────────────────────
+
+async def _get_or_create_content(
     session_factory,
     telegram_user_id: str,
     verse: dict[str, Any],
     *,
-    depth: str = "balanced",
-    journey_title: Optional[str] = None,
+    depth: str,
+    mode: str,
+    journey_title: Optional[str],
 ) -> ReflectionContent:
+    cache_event = f"{mode}_cached"
+    generate_fn = generate_reflection_content if mode == "reflection" else generate_explanation_content
+
     async with session_factory() as session:
         depth_filter = (
             or_(VerseExplanation.depth == "balanced", VerseExplanation.depth.is_(None))
@@ -289,16 +319,12 @@ async def get_or_create_reflection_content(
                 logger.warning("Cache ignorado (inválido/legado)")
             else:
                 logger.info(
-                    "Usando cache de explicação para %s %s:%s",
-                    verse.get("book"), verse.get("chapter"), verse.get("verse"),
+                    "Usando cache de %s para %s %s:%s",
+                    mode, verse.get("book"), verse.get("chapter"), verse.get("verse"),
                 )
                 return _build_cached_reflection(verse, row.explanation or "", depth)
 
-    reflection = await generate_reflection_content(
-        verse,
-        depth=depth,
-        journey_title=journey_title,
-    )
+    reflection = await generate_fn(verse, journey_title=journey_title)
     is_fallback = getattr(reflection, "is_fallback", False)
     source = "fallback" if is_fallback else "openai"
 
@@ -324,17 +350,73 @@ async def get_or_create_reflection_content(
             await session.commit()
             log_event(
                 logger,
-                "reflection_cached",
+                cache_event,
                 telegram_user_id=telegram_user_id,
                 verse_reference=format_verse_reference(verse),
                 source=source,
             )
         else:
             logger.warning(
-                "[Fallback] Não persistindo reflexão fallback para %s %s:%s",
-                verse.get("book"), verse.get("chapter"), verse.get("verse"),
+                "[Fallback] Não persistindo %s fallback para %s %s:%s",
+                mode, verse.get("book"), verse.get("chapter"), verse.get("verse"),
             )
     return reflection
+
+
+# ── Public cache accessors ────────────────────────────────────────────────────
+
+async def get_or_create_explanation_content(
+    session_factory,
+    telegram_user_id: str,
+    verse: dict[str, Any],
+    *,
+    journey_title: Optional[str] = None,
+) -> ReflectionContent:
+    """Fetch or generate a balanced explanation for /explicar. Cache layer: 'explicacao'."""
+    return await _get_or_create_content(
+        session_factory,
+        telegram_user_id,
+        verse,
+        depth="balanced",
+        mode="explanation",
+        journey_title=journey_title,
+    )
+
+
+async def get_or_create_reflection_content(
+    session_factory,
+    telegram_user_id: str,
+    verse: dict[str, Any],
+    *,
+    journey_title: Optional[str] = None,
+) -> ReflectionContent:
+    """Fetch or generate a deep reflection for /reflexao. Cache layer: 'reflexao'."""
+    return await _get_or_create_content(
+        session_factory,
+        telegram_user_id,
+        verse,
+        depth="deep",
+        mode="reflection",
+        journey_title=journey_title,
+    )
+
+
+# ── Render functions ──────────────────────────────────────────────────────────
+
+def render_explanation_message(
+    verse: dict[str, Any],
+    reflection: ReflectionContent,
+    journey_title: Optional[str] = None,
+) -> str:
+    journey_line = f"Trilha ativa: {journey_title}\n\n" if journey_title else ""
+    ref = format_verse_reference(verse)
+    return (
+        f"📖 Explicação sobre {ref}\n\n"
+        f"{journey_line}"
+        f"{reflection.explanation}\n\n"
+        f"📌 Contexto\n{reflection.context}\n\n"
+        f"✅ Aplicação\n{reflection.application}"
+    )
 
 
 def render_reflection_message(
@@ -344,21 +426,12 @@ def render_reflection_message(
 ) -> str:
     journey_line = f"Trilha ativa: {journey_title}\n\n" if journey_title else ""
     ref = format_verse_reference(verse)
-
-    if reflection.depth == "deep":
-        return (
-            f"📖 Reflexão sobre {ref}\n\n"
-            f"{journey_line}"
-            f"✨ Essência\n{reflection.explanation}\n\n"
-            f"🕊️ Contexto\n{reflection.context}\n\n"
-            f"🌱 Aplicação\n{reflection.application}"
-        )
     return (
-        f"📖 Explicação sobre {ref}\n\n"
+        f"📖 Reflexão sobre {ref}\n\n"
         f"{journey_line}"
-        f"{reflection.explanation}\n\n"
-        f"📌 Contexto\n{reflection.context}\n\n"
-        f"✅ Aplicação\n{reflection.application}"
+        f"✨ Essência\n{reflection.explanation}\n\n"
+        f"🕊️ Contexto\n{reflection.context}\n\n"
+        f"🌱 Aplicação\n{reflection.application}"
     )
 
 
@@ -371,20 +444,30 @@ def render_prayer_message(verse: dict[str, Any], prayer: str, journey_title: Opt
     )
 
 
+# ── Audio text builders ───────────────────────────────────────────────────────
+
 def build_explanation_audio_text(verse: dict[str, Any], reflection: ReflectionContent) -> str:
+    """TTS script for /explicar. Returns '' for fallbacks to suppress audio."""
     reference = format_verse_reference(verse)
     if getattr(reflection, "is_fallback", False):
         logger.warning("[Áudio] Bloqueado: fallback %s", reference)
         return ""
-    if reflection.depth == "deep":
-        return (
-            f"Reflexão sobre {reference}. "
-            f"Essência: {reflection.explanation} "
-            f"Aplicação: {reflection.application} "
-            f"Oração: {reflection.prayer}"
-        )
     return (
         f"Explicação sobre {reference}. "
         f"{reflection.explanation} "
         f"Aplicação: {reflection.application}"
+    )
+
+
+def build_reflection_audio_text(verse: dict[str, Any], reflection: ReflectionContent) -> str:
+    """TTS script for /reflexao. Returns '' for fallbacks to suppress audio."""
+    reference = format_verse_reference(verse)
+    if getattr(reflection, "is_fallback", False):
+        logger.warning("[Áudio] Bloqueado: fallback %s", reference)
+        return ""
+    return (
+        f"Reflexão sobre {reference}. "
+        f"Essência: {reflection.explanation} "
+        f"Aplicação: {reflection.application} "
+        f"Oração: {reflection.prayer}"
     )

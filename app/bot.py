@@ -11,6 +11,8 @@ from app.bot_flows import (
     get_cached_reflection,
     remember_last_verse,
     resolve_last_verse,
+    send_explanation_audio,
+    send_explanation_flow,
     send_reflection_audio,
     send_reflection_flow,
     send_prayer_flow,
@@ -279,12 +281,12 @@ async def explicar(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     await message.chat.send_action(ChatAction.TYPING)
     try:
-        await send_reflection_flow(update, context)
+        await send_explanation_flow(update, context)
     except TelegramError:
-        logger.exception("Falha ao enviar reflexão via Telegram.")
+        logger.exception("Falha ao enviar explicação via Telegram.")
         await message.reply_text(build_audio_unavailable_message())
     except Exception:
-        logger.exception("Falha ao gerar reflexão premium.")
+        logger.exception("Falha ao gerar explicação.")
         await message.reply_text(build_reflection_unavailable_message())
 
 
@@ -298,12 +300,12 @@ async def reflexao(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     await message.chat.send_action(ChatAction.TYPING)
     try:
-        await send_reflection_flow(update, context, depth_override="deep")
+        await send_reflection_flow(update, context)
     except TelegramError:
-        logger.exception("Falha ao enviar reflexão profunda via Telegram.")
+        logger.exception("Falha ao enviar reflexão via Telegram.")
         await message.reply_text(build_audio_unavailable_message())
     except Exception:
-        logger.exception("Falha ao gerar reflexão profunda.")
+        logger.exception("Falha ao gerar reflexão.")
         await message.reply_text(build_reflection_unavailable_message())
 
 
@@ -469,7 +471,10 @@ async def handle_interactive_action(update: Update, context: ContextTypes.DEFAUL
         verse = await resolve_last_verse(update, context)
         reflection = get_cached_reflection(context)
         if message and verse and reflection:
-            await send_reflection_audio(message, verse, reflection)
+            if reflection.depth == "deep":
+                await send_reflection_audio(message, verse, reflection)
+            else:
+                await send_explanation_audio(message, verse, reflection)
         else:
             await explicar(update, context)
         return
