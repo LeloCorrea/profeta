@@ -24,3 +24,14 @@ profeta_oracle_nopass
 # OS
 .DS_Store
 Thumbs.db
+
+# temp
+diff.txt
+
+# node / ferramentas locais
+node_modules/
+.claude/
+.rtk/
+CLAUDE.md
+package-lock.json
+package.json
