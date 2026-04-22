@@ -104,7 +104,9 @@ async def send_reflection_audio(message, verse: dict[str, Any], reflection: Refl
     if not audio_text:
         logger.info("[Áudio] Reflexão fallback — áudio omitido para %s", format_verse_reference(verse))
         return
-    asset = await ensure_named_audio_asset("explicacao", verse, audio_text)
+    # Chaves de cache separadas para não sobrepor áudio balanced com deep
+    prefix = "reflexao" if reflection.depth == "deep" else "explicacao"
+    asset = await ensure_named_audio_asset(prefix, verse, audio_text)
     await send_audio_asset(
         message,
         asset,
@@ -115,6 +117,27 @@ async def send_reflection_audio(message, verse: dict[str, Any], reflection: Refl
         logger,
         "reflection_audio_sent",
         verse_reference=format_verse_reference(verse),
+        depth=reflection.depth,
+        cache_hit=asset.cache_hit,
+    )
+
+
+async def send_prayer_audio(message, verse: dict[str, Any], prayer: str) -> None:
+    if not prayer:
+        return
+    reference = format_verse_reference(verse)
+    audio_text = f"Oração a partir de {reference}. {prayer}"
+    asset = await ensure_named_audio_asset("oracao", verse, audio_text)
+    await send_audio_asset(
+        message,
+        asset,
+        title=f"Oração de {reference}",
+        performer="Profeta",
+    )
+    log_event(
+        logger,
+        "prayer_audio_sent",
+        verse_reference=reference,
         cache_hit=asset.cache_hit,
     )
 
@@ -228,3 +251,5 @@ async def send_prayer_flow(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         telegram_user_id=user.id,
         verse_reference=format_verse_reference(verse),
     )
+
+    await send_prayer_audio(message, verse, prayer)

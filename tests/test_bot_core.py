@@ -359,3 +359,90 @@ async def test_reflexao_uses_deep_depth(fake_update, fake_context, monkeypatch, 
 
     assert depths_used == ["deep"]
     assert any("Reflexão sobre Salmos 23:1" in r["text"] for r in fake_update.effective_message.replies)
+
+
+@pytest.mark.asyncio
+async def test_reflexao_audio_uses_reflexao_prefix_not_explicacao(
+    tmp_audio_dirs, fake_update, fake_context, monkeypatch, sample_verse
+):
+    """Cache de /reflexao (deep) e /explicar (balanced) devem ser arquivos separados."""
+    import app.bot as bot_module
+    import app.bot_flows as bot_flows_module
+    from tests.conftest import build_fake_reflection
+    from app.audio_service import AudioAsset
+
+    prefixes_used = []
+
+    async def spy_ensure(prefix, verse, text):
+        prefixes_used.append(prefix)
+        path = tmp_audio_dirs / f"{prefix}_spy.mp3"
+        path.write_bytes(b"fake")
+        return AudioAsset(key=prefix, path=path, cache_hit=False)
+
+    async def fake_get_or_create(sf, uid, verse, depth, journey_title):
+        return build_fake_reflection(depth)
+
+    async def fake_active_subscription(uid):
+        return True
+
+    async def fake_get_active_journey(sf, uid):
+        return None
+
+    async def fake_get_depth(sf, uid):
+        return "balanced"
+
+    monkeypatch.setattr(bot_module, "user_has_active_subscription", fake_active_subscription)
+    monkeypatch.setattr(bot_flows_module, "get_or_create_reflection_content", fake_get_or_create)
+    monkeypatch.setattr(bot_flows_module, "get_active_journey", fake_get_active_journey)
+    monkeypatch.setattr(bot_flows_module, "get_user_explanation_depth", fake_get_depth)
+    monkeypatch.setattr(bot_flows_module, "ensure_named_audio_asset", spy_ensure)
+    fake_context.user_data["last_verse"] = sample_verse
+
+    await bot_module.reflexao(fake_update, fake_context)
+
+    assert "reflexao" in prefixes_used, f"Esperado 'reflexao' mas recebido: {prefixes_used}"
+    assert "explicacao" not in prefixes_used
+
+
+@pytest.mark.asyncio
+async def test_orar_sends_prayer_audio(
+    tmp_audio_dirs, fake_update, fake_context, monkeypatch, sample_verse
+):
+    """/orar deve enviar texto E áudio da oração."""
+    import app.bot as bot_module
+    import app.bot_flows as bot_flows_module
+    from app.content_service import ReflectionContent
+    from app.audio_service import AudioAsset
+
+    prefixes_used = []
+
+    async def spy_ensure(prefix, verse, text):
+        prefixes_used.append(prefix)
+        path = tmp_audio_dirs / f"{prefix}_spy.mp3"
+        path.write_bytes(b"fake")
+        return AudioAsset(key=prefix, path=path, cache_hit=False)
+
+    async def fake_active_subscription(uid):
+        return True
+
+    async def fake_get_active_journey(sf, uid):
+        return None
+
+    cached_reflection = ReflectionContent(
+        explanation="Explicacao.", context="Contexto.", application="Aplicacao.",
+        prayer="Oração de teste da oração.", summary="Resumo.",
+    )
+    fake_context.user_data["last_verse"] = sample_verse
+    fake_context.user_data["last_reflection"] = cached_reflection.as_dict()
+
+    monkeypatch.setattr(bot_module, "user_has_active_subscription", fake_active_subscription)
+    monkeypatch.setattr(bot_flows_module, "get_active_journey", fake_get_active_journey)
+    monkeypatch.setattr(bot_flows_module, "ensure_named_audio_asset", spy_ensure)
+
+    await bot_module.orar(fake_update, fake_context)
+
+    replies = fake_update.effective_message.replies
+    audios = fake_update.effective_message.audios
+    assert any("Oração" in r["text"] for r in replies), f"Sem reply de oração: {replies}"
+    assert "oracao" in prefixes_used, f"Esperado 'oracao' mas recebido: {prefixes_used}"
+    assert len(audios) == 1
