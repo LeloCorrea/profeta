@@ -1,7 +1,8 @@
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from typing import Optional
 
-from app.config import FEATURE_FAVORITES, FEATURE_INLINE_ACTIONS, FEATURE_JOURNEYS
+from app.config import CURRENT_TENANT, FEATURE_FAVORITES, FEATURE_INLINE_ACTIONS, FEATURE_JOURNEYS
+from app.tenant_config import TenantBranding, TenantConfig
 
 
 ACTION_EXPLAIN = "action:explain"
@@ -19,14 +20,21 @@ def _action_button(label: str, action: str) -> InlineKeyboardButton:
     return InlineKeyboardButton(label, callback_data=action)
 
 
-def build_welcome_message() -> str:
+def build_welcome_message(cfg: Optional[TenantConfig] = None) -> str:
+    b = (cfg or CURRENT_TENANT).branding
     return (
-        "🙏 Seja bem-vindo ao Profeta.\n\n"
-        "Aqui você recebe Palavra, reflexão e áudio com um tom sereno e cuidadoso.\n\n"
-        "Use /versiculo para começar sua jornada de hoje.\n"
+        f"Seja bem-vindo ao {b.app_name}. 🙏\n\n"
+        f"Aqui você recebe Palavra, reflexão e áudio com um tom {b.content_tone}"
+        " — para fortalecer sua fé todos os dias.\n\n"
+        f"📖 {b.welcome_verse_ref}\n\n"
+        f"\"{b.welcome_verse_text}\"\n\n"
+        "Hoje pode ser o começo de uma nova jornada com Deus.\n\n"
+        "Use /versiculo para receber sua Palavra de hoje.\n"
         "Use /explicar para aprofundar o último versículo.\n"
-        "Use /assinar para ativar ou renovar seu acesso premium.\n"
-        "Se quiser ver tudo com calma, use /ajuda."
+        "Use /reflexao para refletir sobre essa Palavra.\n"
+        "Use /orar para receber uma oração guiada para o seu momento.\n"
+        "Use /ajuda para conhecer tudo com calma.\n"
+        "Use /assinar para ativar ou renovar seu acesso premium."
     )
 
 
@@ -35,7 +43,7 @@ def build_help_message() -> str:
         "Comandos disponíveis\n\n"
         "/start - iniciar e ativar acesso por link\n"
         "/versiculo - receber um versículo com áudio\n"
-        "/explicar - reflexão guiada sobre o último versículo\n"
+        "/explicar - explicação bíblica e contextual do último versículo\n"
         "/reflexao - reflexão contemplativa profunda sobre o último versículo\n"
         "/orar - oração baseada no último versículo\n"
         "/meuultimo - rever o último versículo enviado\n"
@@ -50,19 +58,52 @@ def build_help_message() -> str:
     )
 
 
-def build_subscription_required_message() -> str:
+def build_subscription_required_message(
+    payment_url: str = "",
+    cfg: Optional[TenantConfig] = None,
+) -> str:
+    b = (cfg or CURRENT_TENANT).branding
+    base = f"✨ Este recurso é exclusivo para assinantes do {b.app_name}.\n\n{b.subscription_pitch}"
+    if payment_url:
+        return f"{base}\n\n{payment_url}"
+    return f"{base}\n\nUse /assinar para ativar seu acesso."
+
+
+def build_subscription_message(
+    payment_link_url: str,
+    cfg: Optional[TenantConfig] = None,
+) -> str:
+    b = (cfg or CURRENT_TENANT).branding
     return (
-        "✨ Seu acesso premium ainda não está ativo.\n\n"
-        "Quando desejar, use /assinar para liberar versículos, reflexões em áudio e jornadas guiadas.\n"
-        "Assim que ativar, volte com /versiculo e eu sigo com você."
+        f"💳 Ative seu acesso premium ao {b.app_name}\n\n"
+        "Assim que o pagamento for confirmado, seu link de ativação ficará pronto automaticamente.\n\n"
+        f"{payment_link_url}"
     )
 
 
-def build_subscription_message(payment_link_url: str) -> str:
+def build_payment_message(
+    invoice_url: str,
+    pix_code: Optional[str] = None,
+    value: Optional[float] = None,
+    fallback: bool = False,
+) -> str:
+    value_line = f"Valor: R$ {value:.2f} (acesso mensal)\n\n" if value else ""
+
+    if fallback or not pix_code:
+        return (
+            "💳 Ative seu acesso premium ao Profeta\n\n"
+            f"{value_line}"
+            "Assim que o pagamento for confirmado, seu acesso é ativado automaticamente.\n\n"
+            f"{invoice_url}"
+        )
+
     return (
-        "💳 Ative seu acesso premium ao Profeta\n\n"
-        "Assim que o pagamento for confirmado, seu link de ativação ficará pronto automaticamente.\n\n"
-        f"{payment_link_url}"
+        "💳 Seu pagamento PIX foi gerado\n\n"
+        f"{value_line}"
+        f"{invoice_url}\n\n"
+        "Ou use o código PIX (copia e cola):\n\n"
+        f"`{pix_code}`\n\n"
+        "Assim que o pagamento for confirmado, seu acesso é ativado automaticamente."
     )
 
 
@@ -120,8 +161,9 @@ def build_favorites_message(items: list[str]) -> str:
     return f"⭐ Seus favoritos mais recentes\n\n{rendered}"
 
 
-def build_verse_actions_keyboard() -> Optional[InlineKeyboardMarkup]:
-    if not FEATURE_INLINE_ACTIONS:
+def build_verse_actions_keyboard(cfg: Optional[TenantConfig] = None) -> Optional[InlineKeyboardMarkup]:
+    _cfg = cfg or CURRENT_TENANT
+    if not _cfg.feature_inline_actions:
         return None
 
     rows = [
@@ -132,10 +174,10 @@ def build_verse_actions_keyboard() -> Optional[InlineKeyboardMarkup]:
         [_action_button("Receber oração", ACTION_PRAY)],
     ]
 
-    if FEATURE_FAVORITES:
+    if _cfg.feature_favorites:
         rows[-1].append(_action_button("Favoritar", ACTION_FAVORITE))
 
-    if FEATURE_JOURNEYS:
+    if _cfg.feature_journeys:
         rows.append(
             [
                 _action_button("Continuar jornada", ACTION_CONTINUE_JOURNEY),
@@ -146,8 +188,28 @@ def build_verse_actions_keyboard() -> Optional[InlineKeyboardMarkup]:
     return InlineKeyboardMarkup(rows)
 
 
-def build_reflection_actions_keyboard() -> Optional[InlineKeyboardMarkup]:
-    if not FEATURE_INLINE_ACTIONS:
+def build_explanation_actions_keyboard(cfg: Optional[TenantConfig] = None) -> Optional[InlineKeyboardMarkup]:
+    _cfg = cfg or CURRENT_TENANT
+    if not _cfg.feature_inline_actions:
+        return None
+
+    rows = [
+        [_action_button("Continuar jornada", ACTION_CONTINUE_JOURNEY)],
+        [
+            _action_button("Ouvir novamente", ACTION_HEAR_EXPLANATION),
+            _action_button("Receber oração", ACTION_PRAY),
+        ],
+    ]
+
+    if _cfg.feature_favorites:
+        rows[-1].append(_action_button("Favoritar", ACTION_FAVORITE))
+
+    return InlineKeyboardMarkup(rows)
+
+
+def build_reflection_actions_keyboard(cfg: Optional[TenantConfig] = None) -> Optional[InlineKeyboardMarkup]:
+    _cfg = cfg or CURRENT_TENANT
+    if not _cfg.feature_inline_actions:
         return None
 
     rows = [
@@ -155,17 +217,18 @@ def build_reflection_actions_keyboard() -> Optional[InlineKeyboardMarkup]:
             _action_button("Ouvir reflexão", ACTION_HEAR_EXPLANATION),
             _action_button("Receber oração", ACTION_PRAY),
         ],
-        [_action_button("Novo versículo", ACTION_NEW_VERSE)],
+        [_action_button("Continuar jornada", ACTION_CONTINUE_JOURNEY)],
     ]
 
-    if FEATURE_FAVORITES:
+    if _cfg.feature_favorites:
         rows[-1].append(_action_button("Favoritar", ACTION_FAVORITE))
 
     return InlineKeyboardMarkup(rows)
 
 
-def build_prayer_actions_keyboard() -> Optional[InlineKeyboardMarkup]:
-    if not FEATURE_INLINE_ACTIONS:
+def build_prayer_actions_keyboard(cfg: Optional[TenantConfig] = None) -> Optional[InlineKeyboardMarkup]:
+    _cfg = cfg or CURRENT_TENANT
+    if not _cfg.feature_inline_actions:
         return None
 
     return InlineKeyboardMarkup(
@@ -190,10 +253,13 @@ def build_search_empty_message(keyword: str) -> str:
 
 
 def build_admin_status_message(stats: dict) -> str:
+    expiring = stats.get("expiring_7_days", 0)
+    expiring_line = f"\n⏳ Expirando em 7 dias: {expiring}" if expiring else ""
     return (
         "📊 Status do Profeta\n\n"
         f"Usuários cadastrados: {stats.get('total_users', 0)}\n"
         f"Assinaturas ativas: {stats.get('active_subscriptions', 0)}"
+        f"{expiring_line}"
     )
 
 
@@ -207,8 +273,12 @@ def build_admin_users_message(users: list[dict]) -> str:
     return f"👥 Usuários ativos recentes\n\n{lines}"
 
 
-def build_journey_keyboard(journeys: list[object]) -> Optional[InlineKeyboardMarkup]:
-    if not FEATURE_INLINE_ACTIONS:
+def build_journey_keyboard(
+    journeys: list[object],
+    cfg: Optional[TenantConfig] = None,
+) -> Optional[InlineKeyboardMarkup]:
+    _cfg = cfg or CURRENT_TENANT
+    if not _cfg.feature_inline_actions:
         return None
 
     rows = [

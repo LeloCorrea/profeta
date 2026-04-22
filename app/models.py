@@ -14,6 +14,8 @@ class User(Base):
     telegram_username: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
     full_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     status: Mapped[str] = mapped_column(String(32), default="inactive")
+    asaas_customer_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
+    last_interaction_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
@@ -138,6 +140,7 @@ class VerseExplanation(Base):
     explanation: Mapped[str] = mapped_column(Text)
     source: Mapped[Optional[str]] = mapped_column(String(32), default="openai")
     is_fallback: Mapped[Optional[bool]] = mapped_column(default=False)
+    depth: Mapped[Optional[str]] = mapped_column(String(32), default="balanced")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 

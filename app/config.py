@@ -46,6 +46,12 @@ ASAAS_ENV = os.getenv("ASAAS_ENV", "sandbox")
 ASAAS_WEBHOOK_TOKEN = os.getenv("ASAAS_WEBHOOK_TOKEN", "")
 ASAAS_PAYMENT_LINK_ID = os.getenv("ASAAS_PAYMENT_LINK_ID", "")
 ASAAS_PAYMENT_LINK_URL = os.getenv("ASAAS_PAYMENT_LINK_URL", "")
+ASAAS_SUBSCRIPTION_VALUE = float(os.getenv("ASAAS_SUBSCRIPTION_VALUE", "29.90"))
+ASAAS_BASE_URL = (
+    "https://api.asaas.com/v3"
+    if os.getenv("ASAAS_ENV", "sandbox").lower() in {"production", "prod"}
+    else "https://sandbox.asaas.com/api/v3"
+)
 
 # 🔗 APP
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "")
@@ -80,3 +86,11 @@ def is_admin(telegram_user_id: str) -> bool:
         return False
     ids = {uid.strip() for uid in ADMIN_TELEGRAM_IDS.split(",") if uid.strip()}
     return telegram_user_id in ids
+
+
+# ── Tenant abstraction (Phase 1) ─────────────────────────────────────────────
+# CURRENT_TENANT is the singleton for the current process.
+# Phase 2: populated from Control Plane DB instead of env vars.
+from app.tenant_config import TenantConfig  # noqa: E402
+
+CURRENT_TENANT: TenantConfig = TenantConfig.from_env()

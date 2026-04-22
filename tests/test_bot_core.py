@@ -125,7 +125,7 @@ async def test_explicar_flow_uses_last_verse_and_sends_reflection_audio(
 
     await bot_module.explicar(fake_update, fake_context)
 
-    assert any("Reflexão sobre Salmos 23:1" in item["text"] for item in fake_update.effective_message.replies)
+    assert any("Explicação sobre Salmos 23:1" in item["text"] for item in fake_update.effective_message.replies)
     assert len(fake_update.effective_message.audios) == 1
 
 

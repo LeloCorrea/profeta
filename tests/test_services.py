@@ -302,9 +302,10 @@ async def test_subscription_service_expires_overdue_subscriptions(db_sessionmake
         ])
         await session.commit()
 
-    count = await subscription_service.expire_overdue_subscriptions()
+    count, expired_ids = await subscription_service.expire_overdue_subscriptions()
 
     assert count == 1
+    assert "u-expired" in expired_ids
 
     async with db_sessionmaker() as session:
         subs = (await session.execute(select(Subscription))).scalars().all()

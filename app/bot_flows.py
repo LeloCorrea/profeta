@@ -17,6 +17,7 @@ from app.db import SessionLocal
 from app.journey_service import get_active_journey
 from app.observability import get_logger, log_event
 from app.premium_experience import (
+    build_explanation_actions_keyboard,
     build_no_history_message,
     build_prayer_actions_keyboard,
     build_prayer_unavailable_message,
@@ -107,10 +108,15 @@ async def send_reflection_audio(message, verse: dict[str, Any], reflection: Refl
     # Chaves de cache separadas para não sobrepor áudio balanced com deep
     prefix = "reflexao" if reflection.depth == "deep" else "explicacao"
     asset = await ensure_named_audio_asset(prefix, verse, audio_text)
+    title = (
+        f"Reflexão de {format_verse_reference(verse)}"
+        if reflection.depth == "deep"
+        else f"Explicação de {format_verse_reference(verse)}"
+    )
     await send_audio_asset(
         message,
         asset,
-        title=f"Reflexão de {format_verse_reference(verse)}",
+        title=title,
         performer="Profeta",
     )
     log_event(
@@ -208,9 +214,14 @@ async def send_reflection_flow(
     )
     remember_last_reflection(context, reflection)
 
+    keyboard = (
+        build_reflection_actions_keyboard()
+        if depth == "deep"
+        else build_explanation_actions_keyboard()
+    )
     await message.reply_text(
         render_reflection_message(verse, reflection, active_journey.title if active_journey else None),
-        reply_markup=build_reflection_actions_keyboard(),
+        reply_markup=keyboard,
     )
     log_event(
         logger,

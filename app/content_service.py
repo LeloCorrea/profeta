@@ -4,11 +4,12 @@ import os
 from dataclasses import asdict, dataclass
 from typing import Any, Optional
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 
-from app.config import OPENAI_EXPLANATION_MODEL
+from app.config import CURRENT_TENANT, OPENAI_EXPLANATION_MODEL
 from app.models import User, VerseExplanation
 from app.observability import get_logger, log_event
+from app.tenant_config import TenantConfig
 from app.verse_service import format_verse_reference
 
 try:
@@ -189,7 +190,10 @@ async def generate_reflection_content(
     verse: dict[str, Any],
     depth: str = "balanced",
     journey_title: Optional[str] = None,
+    cfg: Optional[TenantConfig] = None,
 ) -> ReflectionContent:
+    _cfg = cfg or CURRENT_TENANT
+
     def _run() -> str:
         client = _get_openai_client()
         system_prompt, user_prompt = _build_prompts(verse, depth, journey_title)
@@ -199,7 +203,7 @@ async def generate_reflection_content(
             verse["book"], verse["chapter"], verse["verse"], depth,
         )
         response = client.chat.completions.create(
-            model=OPENAI_EXPLANATION_MODEL,
+            model=_cfg.openai_model or OPENAI_EXPLANATION_MODEL,
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
@@ -261,11 +265,17 @@ async def get_or_create_reflection_content(
     journey_title: Optional[str] = None,
 ) -> ReflectionContent:
     async with session_factory() as session:
+        depth_filter = (
+            or_(VerseExplanation.depth == "balanced", VerseExplanation.depth.is_(None))
+            if depth == "balanced"
+            else VerseExplanation.depth == depth
+        )
         stmt = (
             select(VerseExplanation)
             .where(VerseExplanation.book == str(verse["book"]))
             .where(VerseExplanation.chapter == str(verse["chapter"]))
             .where(VerseExplanation.verse == str(verse["verse"]))
+            .where(depth_filter)
             .order_by(VerseExplanation.created_at.asc())
             .limit(1)
         )
@@ -308,6 +318,7 @@ async def get_or_create_reflection_content(
                     explanation=reflection.explanation.strip(),
                     source=source,
                     is_fallback=False,
+                    depth=depth,
                 )
             )
             await session.commit()
@@ -332,13 +343,22 @@ def render_reflection_message(
     journey_title: Optional[str] = None,
 ) -> str:
     journey_line = f"Trilha ativa: {journey_title}\n\n" if journey_title else ""
+    ref = format_verse_reference(verse)
+
+    if reflection.depth == "deep":
+        return (
+            f"📖 Reflexão sobre {ref}\n\n"
+            f"{journey_line}"
+            f"✨ Essência\n{reflection.explanation}\n\n"
+            f"🕊️ Contexto\n{reflection.context}\n\n"
+            f"🌱 Aplicação\n{reflection.application}"
+        )
     return (
-        f"📖 Reflexão sobre {format_verse_reference(verse)}\n\n"
+        f"📖 Explicação sobre {ref}\n\n"
         f"{journey_line}"
-        f"✨ Essência\n{reflection.explanation}\n\n"
-        f"🕊️ Contexto\n{reflection.context}\n\n"
-        f"🌱 Aplicação\n{reflection.application}\n\n"
-        f"🙏 Oração\n{reflection.prayer}"
+        f"{reflection.explanation}\n\n"
+        f"📌 Contexto\n{reflection.context}\n\n"
+        f"✅ Aplicação\n{reflection.application}"
     )
 
 
@@ -356,9 +376,15 @@ def build_explanation_audio_text(verse: dict[str, Any], reflection: ReflectionCo
     if getattr(reflection, "is_fallback", False):
         logger.warning("[Áudio] Bloqueado: fallback %s", reference)
         return ""
+    if reflection.depth == "deep":
+        return (
+            f"Reflexão sobre {reference}. "
+            f"Essência: {reflection.explanation} "
+            f"Aplicação: {reflection.application} "
+            f"Oração: {reflection.prayer}"
+        )
     return (
-        f"Reflexão sobre {reference}. "
-        f"Essência: {reflection.explanation} "
-        f"Aplicação: {reflection.application} "
-        f"Oração: {reflection.prayer}"
+        f"Explicação sobre {reference}. "
+        f"{reflection.explanation} "
+        f"Aplicação: {reflection.application}"
     )

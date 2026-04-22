@@ -5,8 +5,10 @@ from typing import Optional
 
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
+from telegram import Bot
+from telegram.error import TelegramError
 
-from app.config import APP_NAME, ASAAS_WEBHOOK_TOKEN, BOT_USERNAME, ENV, PUBLIC_BASE_URL, is_production_environment, missing_settings
+from app.config import APP_NAME, ASAAS_WEBHOOK_TOKEN, BOT_USERNAME, ENV, PUBLIC_BASE_URL, TELEGRAM_BOT_TOKEN, is_production_environment, missing_settings
 from app.db import engine, Base
 import app.models  # noqa: F401
 from app.observability import get_logger, log_event
@@ -14,7 +16,9 @@ from app.payment_service import (
     build_claim_url,
     build_telegram_start_link,
     create_token_for_paid_event,
+    find_telegram_user_for_customer,
     payment_link_matches,
+    save_payment_idempotent,
 )
 
 logger = get_logger(__name__)
@@ -49,6 +53,98 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Profeta API", lifespan=lifespan)
 
 
+_ACTIVATION_MESSAGE = (
+    "✅ Seu acesso foi ativado com sucesso.\n\n"
+    "Você já pode receber um versículo com /versiculo, aprofundar com /explicar"
+    " e retomar seu ritmo espiritual com /continuar."
+)
+
+_RENEWAL_MESSAGE = (
+    "✅ Sua assinatura foi renovada com sucesso.\n\n"
+    "Você já pode receber um versículo com /versiculo, aprofundar com /explicar"
+    " e retomar seu ritmo espiritual com /continuar."
+)
+
+
+async def _send_bot_message(telegram_user_id: str, text: str) -> bool:
+    if not TELEGRAM_BOT_TOKEN:
+        return False
+    try:
+        bot = Bot(token=TELEGRAM_BOT_TOKEN)
+        await bot.send_message(chat_id=telegram_user_id, text=text)
+        return True
+    except TelegramError as err:
+        log_event(logger, "proactive_notification_telegram_error", telegram_user_id=telegram_user_id, error=str(err))
+        return False
+
+
+async def _process_direct_activation(
+    telegram_user_id: str,
+    payment_id: str,
+    customer_id: str,
+) -> bool:
+    """
+    Flow A: API payment with externalReference. No token needed.
+    Saves payment (idempotency) → activates subscription → notifies user.
+    """
+    from app.subscription_service import activate_subscription_for_user, get_or_create_user
+
+    saved = await save_payment_idempotent(payment_id, customer_id)
+    if not saved:
+        log_event(logger, "direct_activation_duplicate", payment_id=payment_id)
+        return False
+
+    try:
+        await get_or_create_user(telegram_user_id=telegram_user_id)
+        await activate_subscription_for_user(telegram_user_id=telegram_user_id)
+
+        # Store asaas_customer_id on User if not yet mapped
+        if customer_id:
+            from app.db import SessionLocal
+            from app.models import User
+            from sqlalchemy import select
+            async with SessionLocal() as session:
+                user = await session.scalar(select(User).where(User.telegram_user_id == telegram_user_id))
+                if user and not user.asaas_customer_id:
+                    user.asaas_customer_id = customer_id
+                    await session.commit()
+
+        await _send_bot_message(telegram_user_id, _ACTIVATION_MESSAGE)
+        log_event(logger, "direct_activation_completed", telegram_user_id=telegram_user_id, payment_id=payment_id)
+        return True
+
+    except Exception as err:
+        log_event(logger, "direct_activation_failed", telegram_user_id=telegram_user_id, error=str(err), level=40)
+        return False
+
+
+async def _try_proactive_renewal(
+    telegram_user_id: str,
+    token: str,
+) -> bool:
+    """
+    Flow B (legacy): returning subscriber recognized by asaas_customer_id.
+    Consumes token → activates subscription → notifies user.
+    """
+    from app.subscription_service import activate_subscription_for_user
+    from app.token_service import consume_activation_token
+
+    try:
+        consumed = await consume_activation_token(token, telegram_user_id)
+        if not consumed:
+            log_event(logger, "proactive_renewal_token_consume_failed", telegram_user_id=telegram_user_id)
+            return False
+
+        await activate_subscription_for_user(telegram_user_id=telegram_user_id)
+        await _send_bot_message(telegram_user_id, _RENEWAL_MESSAGE)
+        log_event(logger, "proactive_renewal_activated", telegram_user_id=telegram_user_id)
+        return True
+
+    except Exception as err:
+        log_event(logger, "proactive_renewal_failed", telegram_user_id=telegram_user_id, error=str(err))
+        return False
+
+
 @app.get("/")
 async def root():
     return {"ok": True, "app": APP_NAME, "env": ENV}
@@ -81,6 +177,9 @@ async def asaas_webhook(
     customer_id = (payment.get("customer") or "").strip()
     payment_link_id = (payment.get("paymentLink") or "").strip()
     status = (payment.get("status") or "").strip().upper()
+    payment_value = payment.get("value")
+    billing_type = (payment.get("billingType") or "").strip()
+    net_value = payment.get("netValue")
 
     log_event(
         logger,
@@ -90,9 +189,12 @@ async def asaas_webhook(
         customer_id=customer_id,
         payment_link_id=payment_link_id,
         status=status,
+        payment_value=payment_value,
+        billing_type=billing_type,
+        net_value=net_value,
     )
 
-    # 🔒 3. Validação básica
+    # 🔒 3. Validação básica do payment_id
     if not payment_id:
         log_event(logger, "asaas_webhook_ignored", reason="payment_id_missing")
         return {"ok": True, "ignored": "payment.id ausente"}
@@ -101,26 +203,60 @@ async def asaas_webhook(
         log_event(logger, "asaas_webhook_ignored", reason="invalid_payment_id")
         return {"ok": True, "ignored": "payment_id inválido"}
 
-    if not payment_link_id:
-        log_event(logger, "asaas_webhook_ignored", reason="payment_link_missing")
-        return {"ok": True, "ignored": "payment.paymentLink ausente"}
-
-    # 🔒 4. Validar produto correto
-    if not payment_link_matches(payment_link_id):
-        log_event(logger, "asaas_webhook_ignored", reason="unexpected_payment_link")
-        return {"ok": True, "ignored": "paymentLink diferente"}
-
-    # 🔒 5. Validar evento correto
+    # 🔒 4. Validar evento e status (comum aos dois fluxos)
     if event != "PAYMENT_CONFIRMED":
         log_event(logger, "asaas_webhook_ignored", reason="irrelevant_event", event_name=event)
         return {"ok": True, "ignored": f"evento não relevante: {event}"}
 
-    # 🔒 6. Validar status confirmado
     if status != "CONFIRMED":
         log_event(logger, "asaas_webhook_ignored", reason="status_not_confirmed", status=status)
         return {"ok": True, "ignored": f"status não confirmado: {status}"}
 
-    # 🔥 7. Processar pagamento (idempotência no service)
+    # 🔒 5. Antifraude: rejeitar valores suspeitos (< R$1,00)
+    if payment_value is not None:
+        try:
+            if float(payment_value) < 1.0:
+                log_event(
+                    logger,
+                    "asaas_webhook_suspicious",
+                    reason="value_below_minimum",
+                    payment_id=payment_id,
+                    payment_value=payment_value,
+                    level=40,
+                )
+                return {"ok": True, "ignored": "valor abaixo do mínimo aceito"}
+        except (TypeError, ValueError):
+            pass
+
+    # ── Determinar fluxo ────────────────────────────────────────────────────────
+    # Fluxo A: pagamento criado via API com externalReference = telegram_user_id
+    external_reference = (payment.get("externalReference") or "").strip()
+    is_direct_flow = external_reference.isdigit() and not payment_link_id
+
+    # Fluxo B (legado): link de pagamento compartilhado (backward compat)
+    is_link_flow = bool(payment_link_id) and payment_link_matches(payment_link_id)
+
+    if not is_direct_flow and not is_link_flow:
+        log_event(
+            logger,
+            "asaas_webhook_ignored",
+            reason="no_matching_flow",
+            external_reference=external_reference,
+            payment_link_id=payment_link_id,
+        )
+        return {"ok": True, "ignored": "pagamento não identificado como Profeta"}
+
+    # 🚀 Fluxo A — ativação direta (novos e renovações via API)
+    if is_direct_flow:
+        log_event(logger, "asaas_webhook_direct_flow", payment_id=payment_id, telegram_user_id=external_reference)
+        activated = await _process_direct_activation(
+            telegram_user_id=external_reference,
+            payment_id=payment_id,
+            customer_id=customer_id,
+        )
+        return {"ok": True, "flow": "direct", "activated": activated}
+
+    # 🔑 Fluxo B — token + email (legado: link compartilhado)
     try:
         token = await create_token_for_paid_event(
             asaas_payment_id=payment_id,
@@ -131,12 +267,10 @@ async def asaas_webhook(
         log_event(logger, "asaas_webhook_error", level=40, reason="payment_processing_failed", error=str(error))
         raise HTTPException(status_code=500, detail="Erro ao processar webhook")
 
-    # 🔒 8. Caso duplicado ou falha controlada
     if not token:
         log_event(logger, "asaas_webhook_ignored", reason="payment_already_processed")
         return {"ok": True, "ignored": "pagamento já processado"}
 
-    # 🔗 9. Gerar links
     claim_url = build_claim_url(token)
     telegram_start_url = build_telegram_start_link(token)
 
@@ -144,16 +278,26 @@ async def asaas_webhook(
         logger,
         "asaas_webhook_processed",
         payment_id=payment_id,
+        customer_id=customer_id,
         payment_link_id=payment_link_id,
         claim_url=claim_url,
         telegram_start_url=telegram_start_url,
     )
 
+    # Notificação proativa para renovações já mapeadas (customer_id → telegram_user_id)
+    proactive = False
+    if customer_id:
+        known_telegram_id = await find_telegram_user_for_customer(customer_id)
+        if known_telegram_id:
+            proactive = await _try_proactive_renewal(known_telegram_id, token)
+
     return {
         "ok": True,
+        "flow": "link",
         "token": token,
         "claim_url": claim_url,
         "telegram_start_url": telegram_start_url,
+        "proactive_activation": proactive,
     }
 
 

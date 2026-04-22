@@ -1,5 +1,53 @@
 # Roadmap de Escala — Profeta SaaS
 
+## Prioridades Arquiteturais de Produto (pré-escala)
+
+Estas duas evoluções devem ocorrer antes ou junto com a escala de usuários,
+pois impactam diretamente a qualidade da experiência central do produto.
+
+### A. Trilhas reais por versículo (trail_tags)
+
+**Status:** Não implementado. Trilhas hoje são cosméticas (exibidas, não influenciam seleção).
+
+**O que falta:**
+1. Coluna `themes TEXT` (ou tabela `verse_themes`) no modelo `Verse`
+2. Script de categorização: associar cada versículo a 1-3 temas (`fe`, `esperanca`, `perdao`, etc.)
+3. Modificar `get_random_verse_for_user()` em `verse_service.py` para aceitar `journey_key` e aplicar lógica 80/20:
+   - 80% versículos cujo tema bate com a trilha ativa
+   - 20% versículos de outras trilhas (variedade saudável)
+4. Migração de banco + reindexação
+
+**Por que é prioritário:** A trilha ativa hoje não altera o que o usuário recebe. Isso reduz o valor percebido da feature de jornadas.
+
+**Arquivos a modificar:**
+- `app/models.py` — adicionar campo/tabela de temas
+- `app/verse_service.py` — `get_random_verse_for_user` com `journey_key`
+- `scripts/categorize_verses.py` — script de backfill de temas
+- Migration Alembic correspondente
+
+---
+
+### B. Persistência de reflexão para /orar (eliminar fallback genérico)
+
+**Status:** Gap identificado em auditoria de abril/2026.
+
+**Problema atual:** `send_prayer_flow()` em `bot_flows.py` busca a oração de `context.user_data["last_reflection"]`
+(memória de sessão). Se o bot reiniciar ou o usuário chegar em nova sessão sem ter rodado `/explicar`/`/reflexao`,
+a oração cai para `build_default_prayer(verse)` — genérica, sem contexto da reflexão.
+
+**Solução:**
+1. Ao salvar `VerseExplanation` no banco, persistir também o campo `prayer` da reflexão
+2. Em `send_prayer_flow()`, se `get_cached_reflection(context)` retornar `None`, buscar a última
+   `VerseExplanation` do versículo no banco e usar seu campo `prayer` antes de ir para o fallback
+
+**Arquivos a modificar:**
+- `app/models.py` — adicionar coluna `prayer TEXT nullable` em `VerseExplanation`
+- `app/content_service.py` — `get_or_create_reflection_content` persiste `prayer`
+- `app/bot_flows.py` — `send_prayer_flow` tenta carregar prayer do banco antes do fallback
+- Migration Alembic correspondente
+
+---
+
 ## Gatilhos de escala (quando agir, não antes)
 
 | Usuários ativos | Ação recomendada |

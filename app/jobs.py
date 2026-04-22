@@ -11,7 +11,10 @@ from app.config import APP_NAME, AUDIO_MAX_AGE_DAYS, ENV, TELEGRAM_BOT_TOKEN, mi
 from app.db import SessionLocal
 from app.models import Subscription, User
 from app.observability import log_event
-from app.subscription_service import expire_overdue_subscriptions
+from app.subscription_service import (
+    expire_overdue_subscriptions,
+    get_users_expiring_in_window,
+)
 from app.verse_service import build_tts_text, get_random_verse_for_user, save_verse_history
 
 _FATAL_TELEGRAM_KEYWORDS = ("blocked", "bot was blocked", "deactivated", "kicked", "chat not found", "user not found")
@@ -62,22 +65,40 @@ async def main() -> None:
     logger.info("===== INICIO DO JOB DIARIO =====")
     log_event(logger, "daily_job_started", app_name=APP_NAME, env=ENV)
 
-    expired = await expire_overdue_subscriptions()
-    if expired:
-        logger.info(f"Assinaturas expiradas desativadas: {expired}")
+    bot = Bot(token=TELEGRAM_BOT_TOKEN)
 
+    # ── 1. Expirar assinaturas vencidas e notificar usuários ──────────────────
+    expired_count, expired_user_ids = await expire_overdue_subscriptions()
+    if expired_count:
+        logger.info(f"Assinaturas expiradas desativadas: {expired_count}")
+        for uid in expired_user_ids:
+            await _send_expiry_notification(uid, bot, logger)
+
+    # ── 2. Lembretes de renovação: 7 dias, 3 dias e 1 dia antes ──────────────
+    reminder_windows = [
+        (6, 7, 7),   # expira entre 6 e 7 dias → avisa "7 dias"
+        (2, 3, 3),   # expira entre 2 e 3 dias → avisa "3 dias"
+        (0, 1, 1),   # expira entre 0 e 1 dia  → avisa "hoje"
+    ]
+    for days_min, days_max, days_display in reminder_windows:
+        expiring = await get_users_expiring_in_window(days_min, days_max)
+        for uid in expiring:
+            await _send_renewal_reminder(uid, days_display, bot, logger)
+        if expiring:
+            logger.info(f"Lembretes de {days_display}d enviados: {len(expiring)}")
+
+    # ── 3. Limpeza de áudio antigo ────────────────────────────────────────────
     cleaned = cleanup_old_audio_files(max_age_days=AUDIO_MAX_AGE_DAYS)
     if cleaned:
         logger.info(f"Arquivos de áudio antigos removidos: {cleaned}")
 
+    # ── 4. Envio diário do versículo ──────────────────────────────────────────
     user_ids = await get_active_user_ids()
     logger.info(f"Usuarios ativos encontrados: {len(user_ids)}")
     log_event(logger, "daily_job_active_users_loaded", active_user_count=len(user_ids))
 
     if not user_ids:
         return
-
-    bot = Bot(token=TELEGRAM_BOT_TOKEN)
 
     sent = 0
     failed = 0
@@ -142,6 +163,53 @@ async def _send_verse_with_retry(user_id: str, bot: Bot, logger: logging.Logger,
                 return False
 
     return False
+
+
+async def _send_expiry_notification(user_id: str, bot: Bot, logger: logging.Logger) -> bool:
+    try:
+        text = (
+            "⚠️ Sua assinatura do Profeta expirou.\n\n"
+            "Para voltar a receber Palavra, reflexão e áudio diários, use /assinar."
+        )
+        await bot.send_message(chat_id=user_id, text=text)
+        log_event(logger, "expiry_notification_sent", telegram_user_id=user_id)
+        return True
+    except TelegramError as error:
+        err_lower = str(error).lower()
+        if any(keyword in err_lower for keyword in _FATAL_TELEGRAM_KEYWORDS):
+            logger.warning(f"Usuário {user_id} inacessível (notificação expiração): {error}")
+        else:
+            logger.error(f"Falha ao notificar expiração para {user_id}: {error}")
+        return False
+
+
+async def _send_renewal_reminder(user_id: str, days_left: int, bot: Bot, logger: logging.Logger) -> bool:
+    try:
+        if days_left <= 1:
+            text = (
+                "⚠️ Sua assinatura do Profeta expira hoje.\n\n"
+                "Para continuar sua jornada espiritual, use /assinar antes da meia-noite."
+            )
+        elif days_left <= 3:
+            text = (
+                f"⏳ Sua assinatura expira em {days_left} dias.\n\n"
+                "Quando quiser renovar, use /assinar. Fico aqui com você."
+            )
+        else:
+            text = (
+                f"📅 Sua assinatura expira em {days_left} dias.\n\n"
+                "Você pode renovar quando quiser com /assinar."
+            )
+        await bot.send_message(chat_id=user_id, text=text)
+        log_event(logger, "renewal_reminder_sent", telegram_user_id=user_id, days_left=days_left)
+        return True
+    except TelegramError as error:
+        err_lower = str(error).lower()
+        if any(keyword in err_lower for keyword in _FATAL_TELEGRAM_KEYWORDS):
+            logger.warning(f"Usuário {user_id} inacessível (lembrete renovação): {error}")
+        else:
+            logger.error(f"Falha ao enviar lembrete para {user_id}: {error}")
+        return False
 
 
 if __name__ == "__main__":

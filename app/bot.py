@@ -70,6 +70,7 @@ from app.premium_experience import (
     build_reflection_unavailable_message,
     build_search_empty_message,
     build_search_results_message,
+    build_payment_message,
     build_subscription_message,
     build_subscription_required_message,
     build_verse_actions_keyboard,
@@ -77,11 +78,13 @@ from app.premium_experience import (
     build_welcome_message,
 )
 from app.rate_limiter import check_rate_limit
+from app.payment_service import create_payment_for_user
 from app.subscription_service import (
     activate_subscription_for_user,
     get_admin_recent_users,
     get_admin_stats,
     get_or_create_user,
+    record_user_interaction,
     user_has_active_subscription,
 )
 from app.token_service import activate_subscription_via_token
@@ -146,6 +149,7 @@ async def ensure_user_record(update: Update) -> None:
             )
         )
         await maybe_await(get_user_explanation_depth(SessionLocal, str(user.id)))
+        await record_user_interaction(str(user.id))
     except Exception:
         logger.exception("Falha ao garantir registro do usuário.")
 
@@ -161,7 +165,7 @@ async def require_active_subscription(update: Update) -> bool:
             return True
     except Exception:
         logger.exception("Erro ao validar assinatura ativa.")
-    await message.reply_text(build_subscription_required_message())
+    await message.reply_text(build_subscription_required_message(ASAAS_PAYMENT_LINK_URL))
     return False
 
 
@@ -208,8 +212,31 @@ async def ajuda(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def assinar(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     message = get_message(update)
-    if message:
-        await message.reply_text(build_subscription_message(ASAAS_PAYMENT_LINK_URL))
+    user = get_user(update)
+    if not message or not user:
+        return
+
+    log_event(logger, "assinar_clicked", telegram_user_id=str(user.id))
+    await ensure_user_record(update)
+    await message.chat.send_action(ChatAction.TYPING)
+
+    try:
+        payment_info = await create_payment_for_user(
+            telegram_user_id=str(user.id),
+            full_name=user.full_name,
+        )
+    except Exception:
+        logger.exception("Falha ao criar pagamento para usuário %s", user.id)
+        payment_info = {"invoice_url": ASAAS_PAYMENT_LINK_URL, "pix_code": None, "value": None, "fallback": True}
+
+    await message.reply_text(
+        build_payment_message(
+            invoice_url=payment_info["invoice_url"],
+            pix_code=payment_info.get("pix_code"),
+            value=payment_info.get("value"),
+            fallback=payment_info.get("fallback", False),
+        )
+    )
 
 
 async def meuultimo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

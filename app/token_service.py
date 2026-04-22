@@ -4,7 +4,7 @@ from datetime import datetime
 from sqlalchemy import select
 
 from app.db import SessionLocal
-from app.models import ActivationToken
+from app.models import ActivationToken, User
 from app.observability import get_logger, log_event
 
 
@@ -66,6 +66,14 @@ async def consume_activation_token(token_value: str, telegram_user_id: str) -> b
         row.status = "used"
         row.telegram_user_id = telegram_user_id
         row.used_at = datetime.utcnow()
+
+        # Propagate asaas_customer_id to User for future proactive renewals
+        if row.asaas_customer_id:
+            user = await session.scalar(
+                select(User).where(User.telegram_user_id == telegram_user_id)
+            )
+            if user and not user.asaas_customer_id:
+                user.asaas_customer_id = row.asaas_customer_id
 
         await session.commit()
         log_event(logger, "activation_token_consumed", telegram_user_id=telegram_user_id)

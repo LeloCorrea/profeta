@@ -105,27 +105,51 @@ async def user_has_active_subscription(telegram_user_id: str) -> bool:
         return sub is not None
 
 
-async def expire_overdue_subscriptions() -> int:
+async def expire_overdue_subscriptions() -> tuple[int, list[str]]:
     now = datetime.utcnow()
     async with SessionLocal() as session:
         stmt = (
-            select(Subscription)
+            select(Subscription, User.telegram_user_id)
+            .join(User, User.id == Subscription.user_id)
             .where(Subscription.status == "active")
             .where(Subscription.paid_until.isnot(None))
             .where(Subscription.paid_until < now)
         )
-        rows = (await session.execute(stmt)).scalars().all()
-        for sub in rows:
+        rows = (await session.execute(stmt)).all()
+        user_ids: list[str] = []
+        for sub, telegram_user_id in rows:
             sub.status = "inactive"
+            if telegram_user_id:
+                user_ids.append(telegram_user_id)
         await session.commit()
 
     count = len(rows)
     if count:
         log_event(logger, "subscriptions_expired", count=count)
-    return count
+    return count, user_ids
+
+
+async def get_users_expiring_in_window(days_min: int, days_max: int) -> list[str]:
+    """Retorna IDs de usuários com assinatura expirando entre days_min e days_max dias a partir de agora."""
+    now = datetime.utcnow()
+    window_start = now + timedelta(days=days_min)
+    window_end = now + timedelta(days=days_max)
+    async with SessionLocal() as session:
+        stmt = (
+            select(User.telegram_user_id)
+            .join(Subscription, Subscription.user_id == User.id)
+            .where(Subscription.status == "active")
+            .where(Subscription.paid_until.isnot(None))
+            .where(Subscription.paid_until > window_start)
+            .where(Subscription.paid_until <= window_end)
+        )
+        result = await session.execute(stmt)
+        return [row[0] for row in result.all() if row[0]]
 
 
 async def get_admin_stats() -> dict:
+    now = datetime.utcnow()
+    week_ahead = now + timedelta(days=7)
     async with SessionLocal() as session:
         total_users = (await session.execute(
             select(func.count()).select_from(User)
@@ -134,7 +158,18 @@ async def get_admin_stats() -> dict:
             select(func.count()).select_from(Subscription)
             .where(Subscription.status == "active")
         )).scalar_one() or 0
-    return {"total_users": total_users, "active_subscriptions": active_subs}
+        expiring_7d = (await session.execute(
+            select(func.count()).select_from(Subscription)
+            .where(Subscription.status == "active")
+            .where(Subscription.paid_until.isnot(None))
+            .where(Subscription.paid_until > now)
+            .where(Subscription.paid_until <= week_ahead)
+        )).scalar_one() or 0
+    return {
+        "total_users": total_users,
+        "active_subscriptions": active_subs,
+        "expiring_7_days": expiring_7d,
+    }
 
 
 async def get_subscription_info(telegram_user_id: str) -> dict:
@@ -161,6 +196,18 @@ async def get_subscription_info(telegram_user_id: str) -> dict:
             "paid_until": sub.paid_until.strftime("%d/%m/%Y") if sub.paid_until else None,
             "days_remaining": days_remaining,
         }
+
+
+async def record_user_interaction(telegram_user_id: str) -> None:
+    """Update last_interaction_at for dormancy tracking. Fire-and-forget; never raises."""
+    try:
+        async with SessionLocal() as session:
+            user = await session.scalar(select(User).where(User.telegram_user_id == telegram_user_id))
+            if user:
+                user.last_interaction_at = datetime.utcnow()
+                await session.commit()
+    except Exception:
+        logger.debug("record_user_interaction failed silently for %s", telegram_user_id)
 
 
 async def get_admin_recent_users(limit: int = 10) -> list[dict]:

@@ -7,8 +7,9 @@ from typing import Optional
 
 import edge_tts
 
-from app.config import TTS_RATE, TTS_VOICE
+from app.config import CURRENT_TENANT, TTS_RATE, TTS_VOICE
 from app.observability import get_logger, log_event
+from app.tenant_config import TenantConfig
 
 AUDIO_DIR = Path("data/audio")
 AUDIO_DIR.mkdir(parents=True, exist_ok=True)
@@ -43,16 +44,23 @@ def build_named_audio_path(prefix: str, verse: dict[str, object]) -> Path:
     return AUDIO_DIR / build_audio_filename(prefix, verse)
 
 
-async def _save_tts_audio(path: Path, text: str) -> None:
+async def _save_tts_audio(path: Path, text: str, cfg: Optional[TenantConfig] = None) -> None:
+    _cfg = cfg or CURRENT_TENANT
     communicate = edge_tts.Communicate(
         text=text,
-        voice=TTS_VOICE,
-        rate=TTS_RATE,
+        voice=_cfg.tts_voice or TTS_VOICE,
+        rate=_cfg.tts_rate or TTS_RATE,
     )
     await communicate.save(str(path))
 
 
-async def ensure_named_audio_asset(prefix: str, verse: dict[str, object], text: str) -> AudioAsset:
+async def ensure_named_audio_asset(
+    prefix: str,
+    verse: dict[str, object],
+    text: str,
+    cfg: Optional[TenantConfig] = None,
+) -> AudioAsset:
+    _cfg = cfg or CURRENT_TENANT
     path = build_named_audio_path(prefix, verse)
     key = path.stem
 
@@ -60,8 +68,8 @@ async def ensure_named_audio_asset(prefix: str, verse: dict[str, object], text: 
         log_event(logger, "audio_cache_hit", cache_layer=prefix, audio_key=key)
         return AudioAsset(key=key, path=path, cache_hit=True)
 
-    await _save_tts_audio(path, text)
-    log_event(logger, "audio_generated", cache_layer=prefix, audio_key=key, voice=TTS_VOICE)
+    await _save_tts_audio(path, text, _cfg)
+    log_event(logger, "audio_generated", cache_layer=prefix, audio_key=key, voice=_cfg.tts_voice or TTS_VOICE)
     return AudioAsset(key=key, path=path, cache_hit=False)
 
 
@@ -77,12 +85,13 @@ def cleanup_old_audio_files(max_age_days: int = 7) -> int:
     return count
 
 
-async def generate_tts_audio(text: str) -> Path:
+async def generate_tts_audio(text: str, cfg: Optional[TenantConfig] = None) -> Path:
+    _cfg = cfg or CURRENT_TENANT
     safe_name = normalize_text(text)[:80] or "audio"
     path = AUDIO_DIR / f"audio_{safe_name}.mp3"
     if not path.exists():
-        await _save_tts_audio(path, text)
-        log_event(logger, "audio_generated", cache_layer="generic", audio_key=path.stem, voice=TTS_VOICE)
+        await _save_tts_audio(path, text, _cfg)
+        log_event(logger, "audio_generated", cache_layer="generic", audio_key=path.stem, voice=_cfg.tts_voice or TTS_VOICE)
     else:
         log_event(logger, "audio_cache_hit", cache_layer="generic", audio_key=path.stem)
     return path
