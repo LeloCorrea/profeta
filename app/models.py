@@ -56,6 +56,10 @@ class Subscription(Base):
     paid_until: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
+    __table_args__ = (
+        UniqueConstraint("user_id", name="uq_subscription_user"),
+    )
+
 class VerseHistory(Base):
     __tablename__ = "verse_history"
 

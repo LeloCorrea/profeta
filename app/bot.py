@@ -19,6 +19,7 @@ from app.bot_flows import (
     send_verse_audio,
     send_verse_flow,
 )
+from app.session_state import JourneyState, SessionStore
 from app.config import (
     APP_NAME,
     ASAAS_PAYMENT_LINK_URL,
@@ -38,7 +39,6 @@ from app.config import (
 from app.db import SessionLocal
 from app.journey_service import (
     JOURNEYS,
-    build_active_journey_touchpoint,
     build_journey_catalog_message,
     get_active_journey,
     start_journey,
@@ -369,13 +369,22 @@ async def trilhas(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def continuar(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     message = get_message(update)
     user = get_user(update)
-    if not message or not user or not FEATURE_JOURNEYS:
+    if not message or not user:
         return
-    touchpoint = await build_active_journey_touchpoint(SessionLocal, str(user.id))
-    if not touchpoint:
-        await trilhas(update, context)
+
+    verse = await resolve_last_verse(update, context)
+    if not verse:
+        await message.reply_text(build_no_history_message())
         return
-    await message.reply_text(touchpoint, reply_markup=build_verse_actions_keyboard())
+
+    state = SessionStore(context).get_state()
+
+    if state is None or state == JourneyState.VERSE:
+        await explicar(update, context)
+    elif state == JourneyState.EXPLANATION:
+        await reflexao(update, context)
+    else:
+        await orar(update, context)
 
 
 async def buscar(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -517,9 +526,9 @@ def main() -> None:
 
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("ajuda", ajuda))
-    application.add_handler(CommandHandler("versiculo", versiculo))
+    application.add_handler(CommandHandler(["versiculo", "versículo"], versiculo))
     application.add_handler(CommandHandler("explicar", explicar))
-    application.add_handler(CommandHandler("reflexao", reflexao))
+    application.add_handler(CommandHandler(["reflexao", "reflexão"], reflexao))
     application.add_handler(CommandHandler("orar", orar))
     application.add_handler(CommandHandler("meuultimo", meuultimo))
     application.add_handler(CommandHandler("assinar", assinar))

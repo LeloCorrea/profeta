@@ -5,12 +5,12 @@ import pytest_asyncio
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.db import Base
-from app.rate_limiter import clear_all_rate_limits
+from app.rate_limiter import clear_all_rate_limits, _reset_connection
 
 
 @pytest.fixture(autouse=True)
-def reset_rate_limits():
-    clear_all_rate_limits()
+def reset_rate_limits(tmp_path):
+    _reset_connection(tmp_path / "rate_limits.db")
     yield
     clear_all_rate_limits()
 

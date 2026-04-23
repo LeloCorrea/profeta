@@ -79,6 +79,7 @@ RATE_LIMIT_ORAR = env_int("RATE_LIMIT_ORAR", 10)
 
 # 🧹 AUDIO CLEANUP
 AUDIO_MAX_AGE_DAYS = env_int("AUDIO_MAX_AGE_DAYS", 7)
+AUDIO_MIN_DISK_MB = env_int("AUDIO_MIN_DISK_MB", 100)
 
 
 def is_admin(telegram_user_id: str) -> bool:

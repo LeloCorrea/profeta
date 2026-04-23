@@ -1,6 +1,9 @@
 import asyncio
 import logging
+import os
+from datetime import datetime
 from pathlib import Path
+from typing import IO, Optional
 
 from sqlalchemy import select
 from telegram import Bot
@@ -21,6 +24,35 @@ _FATAL_TELEGRAM_KEYWORDS = ("blocked", "bot was blocked", "deactivated", "kicked
 
 LOGS_DIR = Path("logs")
 LOG_FILE = LOGS_DIR / "daily_job.log"
+LOCK_FILE = LOGS_DIR / "daily_job.lock"
+
+
+def _acquire_job_lock() -> Optional[IO]:
+    """
+    Acquires an exclusive file lock to prevent concurrent job execution.
+    Returns an open file handle (lock held) on success, None if another instance
+    is already running.
+
+    Uses fcntl.flock on Linux/macOS: atomic, no race condition, and automatically
+    released by the kernel if the process dies unexpectedly (crash-safe).
+    On non-Unix systems (Windows dev/CI), returns a no-op handle so tests run normally.
+    """
+    try:
+        import fcntl
+    except ImportError:
+        # Windows dev/CI — lock not enforced; tests pass transparently
+        return open(os.devnull, "w")
+
+    LOGS_DIR.mkdir(parents=True, exist_ok=True)
+    lock_fh = open(LOCK_FILE, "w")
+    try:
+        fcntl.flock(lock_fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        lock_fh.write(str(os.getpid()))
+        lock_fh.flush()
+        return lock_fh
+    except BlockingIOError:
+        lock_fh.close()
+        return None
 
 
 def setup_logger() -> logging.Logger:
@@ -40,11 +72,13 @@ def setup_logger() -> logging.Logger:
 
 
 async def get_active_user_ids() -> list[str]:
+    now = datetime.utcnow()
     async with SessionLocal() as session:
         stmt = (
             select(User.telegram_user_id)
             .join(Subscription, Subscription.user_id == User.id)
             .where(Subscription.status == "active")
+            .where(Subscription.paid_until > now)
         )
         result = await session.execute(stmt)
         return [row[0] for row in result.all() if row[0]]
@@ -52,66 +86,80 @@ async def get_active_user_ids() -> list[str]:
 
 async def main() -> None:
     logger = setup_logger()
-    missing = missing_settings("TELEGRAM_BOT_TOKEN")
-    if missing:
-        log_event(
-            logger,
-            "daily_job_configuration_error",
-            level=logging.ERROR,
-            missing_settings=", ".join(missing),
-        )
-        raise RuntimeError(f"Configuracao obrigatoria ausente para job diario: {', '.join(missing)}")
 
-    logger.info("===== INICIO DO JOB DIARIO =====")
-    log_event(logger, "daily_job_started", app_name=APP_NAME, env=ENV)
-
-    bot = Bot(token=TELEGRAM_BOT_TOKEN)
-
-    # ── 1. Expirar assinaturas vencidas e notificar usuários ──────────────────
-    expired_count, expired_user_ids = await expire_overdue_subscriptions()
-    if expired_count:
-        logger.info(f"Assinaturas expiradas desativadas: {expired_count}")
-        for uid in expired_user_ids:
-            await _send_expiry_notification(uid, bot, logger)
-
-    # ── 2. Lembretes de renovação: 7 dias, 3 dias e 1 dia antes ──────────────
-    reminder_windows = [
-        (6, 7, 7),   # expira entre 6 e 7 dias → avisa "7 dias"
-        (2, 3, 3),   # expira entre 2 e 3 dias → avisa "3 dias"
-        (0, 1, 1),   # expira entre 0 e 1 dia  → avisa "hoje"
-    ]
-    for days_min, days_max, days_display in reminder_windows:
-        expiring = await get_users_expiring_in_window(days_min, days_max)
-        for uid in expiring:
-            await _send_renewal_reminder(uid, days_display, bot, logger)
-        if expiring:
-            logger.info(f"Lembretes de {days_display}d enviados: {len(expiring)}")
-
-    # ── 3. Limpeza de áudio antigo ────────────────────────────────────────────
-    cleaned = cleanup_old_audio_files(max_age_days=AUDIO_MAX_AGE_DAYS)
-    if cleaned:
-        logger.info(f"Arquivos de áudio antigos removidos: {cleaned}")
-
-    # ── 4. Envio diário do versículo ──────────────────────────────────────────
-    user_ids = await get_active_user_ids()
-    logger.info(f"Usuarios ativos encontrados: {len(user_ids)}")
-    log_event(logger, "daily_job_active_users_loaded", active_user_count=len(user_ids))
-
-    if not user_ids:
+    # ── Lock de concorrência ──────────────────────────────────────────────────
+    # Garante que apenas uma instância do job execute por vez.
+    # Segunda instância aborta imediatamente com log explícito.
+    lock = _acquire_job_lock()
+    if lock is None:
+        logger.warning("===== JOB DIARIO JA EM EXECUCAO (lock ativo) — ABORTANDO =====")
+        log_event(logger, "daily_job_already_running", level=logging.WARNING)
         return
 
-    sent = 0
-    failed = 0
+    try:
+        missing = missing_settings("TELEGRAM_BOT_TOKEN")
+        if missing:
+            log_event(
+                logger,
+                "daily_job_configuration_error",
+                level=logging.ERROR,
+                missing_settings=", ".join(missing),
+            )
+            raise RuntimeError(f"Configuracao obrigatoria ausente para job diario: {', '.join(missing)}")
 
-    for user_id in user_ids:
-        success = await _send_verse_with_retry(user_id, bot, logger)
-        if success:
-            sent += 1
-        else:
-            failed += 1
+        logger.info("===== INICIO DO JOB DIARIO =====")
+        log_event(logger, "daily_job_started", app_name=APP_NAME, env=ENV)
 
-    logger.info(f"===== FIM DO JOB DIARIO | enviados={sent} | falhas={failed} =====")
-    log_event(logger, "daily_job_finished", sent=sent, failed=failed)
+        bot = Bot(token=TELEGRAM_BOT_TOKEN)
+
+        # ── 1. Expirar assinaturas vencidas e notificar usuários ──────────────────
+        expired_count, expired_user_ids = await expire_overdue_subscriptions()
+        if expired_count:
+            logger.info(f"Assinaturas expiradas desativadas: {expired_count}")
+            for uid in expired_user_ids:
+                await _send_expiry_notification(uid, bot, logger)
+
+        # ── 2. Lembretes de renovação: 7 dias, 3 dias e 1 dia antes ──────────────
+        reminder_windows = [
+            (6, 7, 7),   # expira entre 6 e 7 dias → avisa "7 dias"
+            (2, 3, 3),   # expira entre 2 e 3 dias → avisa "3 dias"
+            (0, 1, 1),   # expira entre 0 e 1 dia  → avisa "hoje"
+        ]
+        for days_min, days_max, days_display in reminder_windows:
+            expiring = await get_users_expiring_in_window(days_min, days_max)
+            for uid in expiring:
+                await _send_renewal_reminder(uid, days_display, bot, logger)
+            if expiring:
+                logger.info(f"Lembretes de {days_display}d enviados: {len(expiring)}")
+
+        # ── 3. Limpeza de áudio antigo ────────────────────────────────────────────
+        cleaned = cleanup_old_audio_files(max_age_days=AUDIO_MAX_AGE_DAYS)
+        if cleaned:
+            logger.info(f"Arquivos de áudio antigos removidos: {cleaned}")
+
+        # ── 4. Envio diário do versículo ──────────────────────────────────────────
+        user_ids = await get_active_user_ids()
+        logger.info(f"Usuarios ativos encontrados: {len(user_ids)}")
+        log_event(logger, "daily_job_active_users_loaded", active_user_count=len(user_ids))
+
+        if not user_ids:
+            return
+
+        sent = 0
+        failed = 0
+
+        for user_id in user_ids:
+            success = await _send_verse_with_retry(user_id, bot, logger)
+            if success:
+                sent += 1
+            else:
+                failed += 1
+
+        logger.info(f"===== FIM DO JOB DIARIO | enviados={sent} | falhas={failed} =====")
+        log_event(logger, "daily_job_finished", sent=sent, failed=failed)
+
+    finally:
+        lock.close()
 
 
 async def _send_verse_with_retry(user_id: str, bot: Bot, logger: logging.Logger, max_attempts: int = 3) -> bool:
@@ -130,10 +178,18 @@ async def _send_verse_with_retry(user_id: str, bot: Bot, logger: logging.Logger,
             audio_asset = await ensure_named_audio_asset("versiculo", verse, build_tts_text(verse))
 
             await bot.send_message(chat_id=user_id, text=message_text)
-            with open(audio_asset.path, "rb") as audio:
-                await bot.send_audio(chat_id=user_id, audio=audio, title="Versículo do dia")
+            if audio_asset is not None:
+                with open(audio_asset.path, "rb") as audio:
+                    await bot.send_audio(chat_id=user_id, audio=audio, title="Versículo do dia")
 
-            await save_verse_history(user_id, verse)
+            # Delivery confirmed. Persist history independently — a failure here
+            # must NOT trigger a retry, as the user already received the verse.
+            try:
+                await save_verse_history(user_id, verse)
+            except Exception as hist_err:
+                logger.warning(f"[Histórico] Falha ao persistir versículo para {user_id}: {hist_err}")
+                log_event(logger, "verse_history_save_failed", telegram_user_id=user_id, error=str(hist_err), level=logging.WARNING)
+
             log_event(logger, "daily_verse_send_completed", telegram_user_id=user_id, verse_reference=verse_ref)
             return True
 

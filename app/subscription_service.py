@@ -1,3 +1,4 @@
+import logging
 from datetime import datetime, timedelta
 from typing import Optional, Union
 
@@ -87,12 +88,14 @@ async def activate_subscription_for_user(
 
 
 async def user_has_active_subscription(telegram_user_id: str) -> bool:
+    now = datetime.utcnow()
     async with SessionLocal() as session:
         stmt = (
             select(Subscription)
             .join(User, User.id == Subscription.user_id)
             .where(User.telegram_user_id == telegram_user_id)
             .where(Subscription.status == "active")
+            .where(Subscription.paid_until > now)
         )
         result = await session.execute(stmt)
         sub = result.scalar_one_or_none()
@@ -198,16 +201,26 @@ async def get_subscription_info(telegram_user_id: str) -> dict:
         }
 
 
-async def record_user_interaction(telegram_user_id: str) -> None:
-    """Update last_interaction_at for dormancy tracking. Fire-and-forget; never raises."""
+async def record_user_interaction(telegram_user_id: str) -> bool:
+    """Update last_interaction_at for dormancy tracking.
+
+    Fire-and-forget: never raises. Returns True if the update was persisted,
+    False if the DB write failed (caller may act on this if needed).
+    """
     try:
         async with SessionLocal() as session:
             user = await session.scalar(select(User).where(User.telegram_user_id == telegram_user_id))
             if user:
                 user.last_interaction_at = datetime.utcnow()
                 await session.commit()
-    except Exception:
-        logger.debug("record_user_interaction failed silently for %s", telegram_user_id)
+        return True
+    except Exception as exc:
+        log_event(
+            logger, "record_interaction_failed", level=logging.WARNING,
+            telegram_user_id=telegram_user_id,
+            error_type=type(exc).__name__, error=str(exc)[:200],
+        )
+        return False
 
 
 async def get_admin_recent_users(limit: int = 10) -> list[dict]:

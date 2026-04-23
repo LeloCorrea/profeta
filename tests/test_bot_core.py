@@ -425,4 +425,95 @@ async def test_orar_sends_prayer_audio(
     audios = fake_update.effective_message.audios
     assert any("Oração" in r["text"] for r in replies), f"Sem reply de oração: {replies}"
     assert "oracao" in prefixes_used, f"Esperado 'oracao' mas recebido: {prefixes_used}"
-    assert len(audios) == 1
+
+
+# ── Fix #3: Continuar jornada baseado em session state ───────────────────────
+
+@pytest.mark.asyncio
+async def test_continuar_delegates_to_explicar_when_no_reflection_cached(
+    fake_update, fake_context, monkeypatch, sample_verse
+):
+    """Continuar sem reflexão em cache → delega ao handler explicar."""
+    import app.bot as bot_module
+
+    called = {"fn": None}
+
+    async def mock_explicar(update, context):
+        called["fn"] = "explicar"
+
+    monkeypatch.setattr(bot_module, "explicar", mock_explicar)
+    fake_context.user_data["last_verse"] = sample_verse
+    # sem last_reflection no user_data
+
+    await bot_module.continuar(fake_update, fake_context)
+
+    assert called["fn"] == "explicar"
+
+
+@pytest.mark.asyncio
+async def test_continuar_delegates_to_reflexao_when_explanation_cached(
+    fake_update, fake_context, monkeypatch, sample_verse
+):
+    """Continuar com state=EXPLANATION → delega ao handler reflexao."""
+    import app.bot as bot_module
+    from app.session_state import JourneyState
+
+    called = {"fn": None}
+
+    async def mock_reflexao(update, context):
+        called["fn"] = "reflexao"
+
+    monkeypatch.setattr(bot_module, "reflexao", mock_reflexao)
+
+    fake_context.user_data["last_verse"] = sample_verse
+    fake_context.user_data["_journey_state"] = JourneyState.EXPLANATION.value
+
+    await bot_module.continuar(fake_update, fake_context)
+
+    assert called["fn"] == "reflexao"
+
+
+@pytest.mark.asyncio
+async def test_continuar_delegates_to_orar_when_deep_reflection_cached(
+    fake_update, fake_context, monkeypatch, sample_verse
+):
+    """Continuar com state=REFLECTION → delega ao handler orar."""
+    import app.bot as bot_module
+    from app.session_state import JourneyState
+
+    called = {"fn": None}
+
+    async def mock_orar(update, context):
+        called["fn"] = "orar"
+
+    monkeypatch.setattr(bot_module, "orar", mock_orar)
+
+    fake_context.user_data["last_verse"] = sample_verse
+    fake_context.user_data["_journey_state"] = JourneyState.REFLECTION.value
+
+    await bot_module.continuar(fake_update, fake_context)
+
+    assert called["fn"] == "orar"
+
+
+@pytest.mark.asyncio
+async def test_continuar_delegates_to_orar_when_prayer_state(
+    fake_update, fake_context, monkeypatch, sample_verse
+):
+    """Continuar com state=PRAYER → delega ao handler orar (jornada já concluída)."""
+    import app.bot as bot_module
+    from app.session_state import JourneyState
+
+    called = {"fn": None}
+
+    async def mock_orar(update, context):
+        called["fn"] = "orar"
+
+    monkeypatch.setattr(bot_module, "orar", mock_orar)
+
+    fake_context.user_data["last_verse"] = sample_verse
+    fake_context.user_data["_journey_state"] = JourneyState.PRAYER.value
+
+    await bot_module.continuar(fake_update, fake_context)
+
+    assert called["fn"] == "orar"

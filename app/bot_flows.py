@@ -4,7 +4,8 @@ from telegram import InputFile, Update
 from telegram.ext import ContextTypes
 
 from app.audio_service import AudioAsset, ensure_named_audio_asset
-from app.config import FEATURE_JOURNEYS
+from app.config import CURRENT_TENANT, FEATURE_JOURNEYS
+from app.session_state import JourneyState, SessionStore, register_session
 from app.content_service import (
     ReflectionContent,
     build_default_prayer,
@@ -44,22 +45,26 @@ logger = get_logger(__name__)
 # ── Context helpers ───────────────────────────────────────────────────────────
 
 def remember_last_verse(context: ContextTypes.DEFAULT_TYPE, verse: dict[str, Any]) -> None:
-    context.user_data["last_verse"] = verse
+    store = SessionStore(context)
+    store.set("last_verse", verse)
+    store.set_state(JourneyState.VERSE)
 
 
 def remember_last_reflection(context: ContextTypes.DEFAULT_TYPE, reflection: ReflectionContent) -> None:
-    context.user_data["last_reflection"] = reflection.as_dict()
+    store = SessionStore(context)
+    store.set("last_reflection", reflection.as_dict())
+    store.set_state(JourneyState.REFLECTION if reflection.depth == "deep" else JourneyState.EXPLANATION)
 
 
 def get_cached_reflection(context: ContextTypes.DEFAULT_TYPE) -> Optional[ReflectionContent]:
-    payload = context.user_data.get("last_reflection")
+    payload = SessionStore(context).get("last_reflection")
     if not isinstance(payload, dict):
         return None
     return ReflectionContent.from_dict(payload)
 
 
 async def resolve_last_verse(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Optional[dict[str, Any]]:
-    cached = context.user_data.get("last_verse")
+    cached = SessionStore(context).get("last_verse")
     if isinstance(cached, dict):
         return cached
     user = update.effective_user
@@ -95,6 +100,8 @@ async def send_audio_asset(
 
 async def send_verse_audio(message, verse: dict[str, Any]) -> None:
     asset = await ensure_named_audio_asset("versiculo", verse, build_tts_text(verse))
+    if asset is None:
+        return
     await send_audio_asset(
         message,
         asset,
@@ -117,6 +124,8 @@ async def send_explanation_audio(message, verse: dict[str, Any], reflection: Ref
         logger.info("[Áudio] Explicação fallback — áudio omitido para %s", format_verse_reference(verse))
         return
     asset = await ensure_named_audio_asset("explicacao", verse, audio_text)
+    if asset is None:
+        return
     await send_audio_asset(
         message,
         asset,
@@ -139,6 +148,8 @@ async def send_reflection_audio(message, verse: dict[str, Any], reflection: Refl
         logger.info("[Áudio] Reflexão fallback — áudio omitido para %s", format_verse_reference(verse))
         return
     asset = await ensure_named_audio_asset("reflexao", verse, audio_text)
+    if asset is None:
+        return
     await send_audio_asset(
         message,
         asset,
@@ -161,6 +172,8 @@ async def send_prayer_audio(message, verse: dict[str, Any], prayer: str) -> None
     reference = format_verse_reference(verse)
     audio_text = f"Oração a partir de {reference}. {prayer}"
     asset = await ensure_named_audio_asset("oracao", verse, audio_text)
+    if asset is None:
+        return
     await send_audio_asset(
         message,
         asset,
@@ -186,6 +199,9 @@ async def send_verse_flow(
     user = update.effective_user
     if not message or not user:
         return
+
+    # Fase 2: registra context.user_data no registry global para acesso pelo engine sem context.
+    register_session(CURRENT_TENANT.tenant_id, str(user.id), context.user_data)
 
     verse = verse or await get_random_verse_for_user(str(user.id))
     if not verse:
@@ -224,6 +240,9 @@ async def send_explanation_flow(
     user = update.effective_user
     if not message or not user:
         return
+
+    # Fase 2: registra context.user_data no registry global para acesso pelo engine sem context.
+    register_session(CURRENT_TENANT.tenant_id, str(user.id), context.user_data)
 
     verse = await resolve_last_verse(update, context)
     if not verse:
@@ -267,6 +286,9 @@ async def send_reflection_flow(
     if not message or not user:
         return
 
+    # Fase 2: registra context.user_data no registry global para acesso pelo engine sem context.
+    register_session(CURRENT_TENANT.tenant_id, str(user.id), context.user_data)
+
     verse = await resolve_last_verse(update, context)
     if not verse:
         await message.reply_text(build_no_history_message())
@@ -306,6 +328,9 @@ async def send_prayer_flow(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     if not message or not user:
         return
 
+    # Fase 2: registra context.user_data no registry global para acesso pelo engine sem context.
+    register_session(CURRENT_TENANT.tenant_id, str(user.id), context.user_data)
+
     verse = await resolve_last_verse(update, context)
     if not verse:
         await message.reply_text(build_prayer_unavailable_message())
@@ -322,6 +347,7 @@ async def send_prayer_flow(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         render_prayer_message(verse, prayer, active_journey.title if active_journey else None),
         reply_markup=build_prayer_actions_keyboard(),
     )
+    SessionStore(context).set_state(JourneyState.PRAYER)
     log_event(
         logger,
         "prayer_sent",

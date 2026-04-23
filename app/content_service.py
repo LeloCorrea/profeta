@@ -1,6 +1,8 @@
 import asyncio
 import json
+import logging
 import os
+import re
 from dataclasses import asdict, dataclass
 from typing import Any, Optional
 
@@ -225,14 +227,39 @@ async def _generate_content(
         journey_title=journey_title or "",
     )
 
-    text = await asyncio.to_thread(_run)
+    # ── A: API / operational error (auth, quota, timeout, network) ────────────
+    # These are critical — the service is degraded and ops must be alerted.
+    try:
+        text = await asyncio.to_thread(_run)
+    except Exception as api_err:
+        log_event(
+            logger,
+            "openai_api_error",
+            level=logging.ERROR,
+            verse_reference=format_verse_reference(verse),
+            mode=mode,
+            error_type=type(api_err).__name__,
+            error=str(api_err)[:200],
+        )
+        return _fallback_reflection(verse, depth)
+
     logger.info("[IA] Resposta OpenAI (primeiros 200 chars): %s", text[:200] if text else "<vazio>")
 
     clean_text = _sanitize_openai_text(text or "")
+
+    # ── B: empty / too-short response (prompt or model issue) ────────────────
     if not clean_text or len(clean_text) < 20:
-        logger.error("[IA] Resposta OpenAI inválida ou vazia. Usando fallback.")
+        log_event(
+            logger,
+            "openai_empty_response",
+            level=logging.WARNING,
+            verse_reference=format_verse_reference(verse),
+            mode=mode,
+            raw_length=len(text) if text else 0,
+        )
         return _fallback_reflection(verse, depth)
 
+    # ── C: JSON parse error (prompt engineering issue) ────────────────────────
     try:
         payload = json.loads(clean_text)
         reflection = ReflectionContent.from_dict({**payload, "depth": depth})
@@ -244,8 +271,16 @@ async def _generate_content(
             source="openai",
         )
         return reflection
-    except (json.JSONDecodeError, Exception) as e:
-        logger.error("[IA] Erro ao parsear resposta OpenAI: %s | texto: %s", e, clean_text[:200])
+    except (json.JSONDecodeError, Exception) as parse_err:
+        log_event(
+            logger,
+            "openai_parse_error",
+            level=logging.WARNING,
+            verse_reference=format_verse_reference(verse),
+            mode=mode,
+            error_type=type(parse_err).__name__,
+            raw_excerpt=clean_text[:100],
+        )
         return _fallback_reflection(verse, depth)
 
 
@@ -446,17 +481,28 @@ def render_prayer_message(verse: dict[str, Any], prayer: str, journey_title: Opt
 
 # ── Audio text builders ───────────────────────────────────────────────────────
 
+def _normalize_for_tts(text: str) -> str:
+    """Replace X:Y patterns so TTS reads them as 'capítulo X versículo Y'."""
+    return re.sub(r'\b(\d+):(\d+)\b', r'capítulo \1 versículo \2', text)
+
+
 def build_explanation_audio_text(verse: dict[str, Any], reflection: ReflectionContent) -> str:
-    """TTS script for /explicar. Returns '' for fallbacks to suppress audio."""
+    """TTS script for /explicar. Returns '' for fallbacks to suppress audio.
+
+    Sections mirror render_explanation_message (explanation + context + application).
+    Biblical X:Y references are normalized so TTS reads them naturally.
+    """
     reference = format_verse_reference(verse)
     if getattr(reflection, "is_fallback", False):
         logger.warning("[Áudio] Bloqueado: fallback %s", reference)
         return ""
-    return (
+    raw = (
         f"Explicação sobre {reference}. "
         f"{reflection.explanation} "
+        f"Contexto: {reflection.context} "
         f"Aplicação: {reflection.application}"
     )
+    return _normalize_for_tts(raw)
 
 
 def build_reflection_audio_text(verse: dict[str, Any], reflection: ReflectionContent) -> str:

@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 from urllib.parse import quote
 
@@ -6,7 +6,7 @@ from sqlalchemy import select
 
 from app.config import ASAAS_API_KEY, ASAAS_PAYMENT_LINK_ID, ASAAS_PAYMENT_LINK_URL, ASAAS_SUBSCRIPTION_VALUE, BOT_USERNAME, CURRENT_TENANT, PUBLIC_BASE_URL
 from app.db import SessionLocal
-from app.models import ActivationToken, Payment, User
+from app.models import ActivationToken, Payment, Subscription, User
 from app.observability import get_logger, log_event
 from app.tenant_config import TenantConfig
 from app.token_service import generate_token_value
@@ -85,7 +85,15 @@ def build_claim_url(token: str) -> str:
 
 def payment_link_matches(link_id: Optional[str]) -> bool:
     if not PAYMENT_LINK_ID:
-        return True
+        # Fail closed: missing config must never silently accept any payment.
+        log_event(
+            logger,
+            "payment_link_misconfigured",
+            reason="ASAAS_PAYMENT_LINK_ID not set — rejecting link-based payment",
+            payment_link_id=link_id or "",
+            level=40,
+        )
+        return False
     return (link_id or "").strip() == PAYMENT_LINK_ID
 
 
@@ -161,6 +169,78 @@ async def create_payment_for_user(
         "value": ASAAS_SUBSCRIPTION_VALUE,
         "fallback": False,
     }
+
+
+async def activate_with_payment_atomic(
+    asaas_payment_id: str,
+    asaas_customer_id: Optional[str],
+    telegram_user_id: str,
+) -> bool:
+    """
+    Atomically: idempotency check → Payment → User upsert → Subscription activation.
+    All writes happen in a single session/transaction.
+    Returns False if already processed (idempotent). Raises on DB failure (allows Asaas retry).
+    """
+    async with SessionLocal() as session:
+        # 1. Idempotency — fail fast before any write
+        existing = await session.scalar(
+            select(Payment).where(Payment.provider_payment_id == asaas_payment_id)
+        )
+        if existing:
+            log_event(logger, "payment_already_processed", provider_payment_id=asaas_payment_id)
+            return False
+
+        # 2. Get or create User
+        user = await session.scalar(
+            select(User).where(User.telegram_user_id == telegram_user_id)
+        )
+        if not user:
+            user = User(telegram_user_id=telegram_user_id, status="active")
+            session.add(user)
+            await session.flush()  # populate user.id before FK reference
+
+        if asaas_customer_id and user.asaas_customer_id != asaas_customer_id:
+            if user.asaas_customer_id:
+                log_event(logger, "customer_id_updated", telegram_user_id=telegram_user_id,
+                          previous=user.asaas_customer_id, new=asaas_customer_id)
+            user.asaas_customer_id = asaas_customer_id
+
+        # 3. Create Payment record
+        session.add(Payment(
+            provider="asaas",
+            provider_payment_id=asaas_payment_id,
+            status="CONFIRMED",
+            customer_id=asaas_customer_id,
+            created_at=datetime.utcnow(),
+        ))
+
+        # 4. Activate or renew Subscription
+        now = datetime.utcnow()
+        sub = await session.scalar(
+            select(Subscription).where(Subscription.user_id == user.id)
+        )
+        if sub:
+            base = sub.paid_until if (sub.paid_until and sub.paid_until > now) else now
+            sub.paid_until = base + timedelta(days=30)
+            sub.status = "active"
+        else:
+            session.add(Subscription(
+                user_id=user.id,
+                plan_name="monthly",
+                status="active",
+                paid_until=now + timedelta(days=30),
+            ))
+
+        # 5. Single commit — atomically persists all of the above
+        await session.commit()
+
+    log_event(
+        logger,
+        "payment_confirmed_and_subscription_activated",
+        provider_payment_id=asaas_payment_id,
+        telegram_user_id=telegram_user_id,
+    )
+    return True
 
 
 async def find_telegram_user_for_customer(asaas_customer_id: str) -> Optional[str]:

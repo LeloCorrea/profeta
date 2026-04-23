@@ -7,6 +7,7 @@ from sqlalchemy import select
 from app.db_helpers import get_or_create_user_in_session
 from app.models import User, UserJourney
 from app.observability import get_logger, log_event
+from app.plugins.loader import load_journey_plugin
 
 
 logger = get_logger(__name__)
@@ -105,10 +106,21 @@ JOURNEYS: dict[str, JourneyDefinition] = {
 
 
 def list_journeys() -> list[JourneyDefinition]:
-    return list(JOURNEYS.values())
+    # Fase 4: aplica precedência de plugins para cada key do catálogo.
+    merged: dict[str, JourneyDefinition] = dict(JOURNEYS)
+    for key in list(merged.keys()):
+        plugin = load_journey_plugin(key)
+        if plugin is not None:
+            merged[key] = plugin  # type: ignore[assignment]
+    return list(merged.values())
 
 
 def get_journey(key: str) -> Optional[JourneyDefinition]:
+    # Fase 4: plugins têm precedência sobre o dict hardcoded.
+    # Fallback ao legado se plugin não existir ou falhar no carregamento.
+    plugin = load_journey_plugin(key)
+    if plugin is not None:
+        return plugin  # type: ignore[return-value]
     return JOURNEYS.get(key)
 
 

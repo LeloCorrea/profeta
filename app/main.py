@@ -1,10 +1,11 @@
 import html as html_lib
 import os
 from contextlib import asynccontextmanager
-from typing import Optional
+from typing import Any, Optional
 
 from fastapi import FastAPI, Header, HTTPException, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from pydantic import BaseModel
 from telegram import Bot
 from telegram.error import TelegramError
 
@@ -13,12 +14,12 @@ from app.db import engine, Base
 import app.models  # noqa: F401
 from app.observability import get_logger, log_event
 from app.payment_service import (
+    activate_with_payment_atomic,
     build_claim_url,
     build_telegram_start_link,
     create_token_for_paid_event,
     find_telegram_user_for_customer,
     payment_link_matches,
-    save_payment_idempotent,
 )
 
 logger = get_logger(__name__)
@@ -85,37 +86,22 @@ async def _process_direct_activation(
 ) -> bool:
     """
     Flow A: API payment with externalReference. No token needed.
-    Saves payment (idempotency) → activates subscription → notifies user.
+    Payment + User + Subscription are persisted atomically in a single transaction.
+    If the commit fails, nothing is saved → Asaas retry will succeed on the next attempt.
     """
-    from app.subscription_service import activate_subscription_for_user, get_or_create_user
-
-    saved = await save_payment_idempotent(payment_id, customer_id)
-    if not saved:
-        log_event(logger, "direct_activation_duplicate", payment_id=payment_id)
-        return False
-
     try:
-        await get_or_create_user(telegram_user_id=telegram_user_id)
-        await activate_subscription_for_user(telegram_user_id=telegram_user_id)
-
-        # Store asaas_customer_id on User if not yet mapped
-        if customer_id:
-            from app.db import SessionLocal
-            from app.models import User
-            from sqlalchemy import select
-            async with SessionLocal() as session:
-                user = await session.scalar(select(User).where(User.telegram_user_id == telegram_user_id))
-                if user and not user.asaas_customer_id:
-                    user.asaas_customer_id = customer_id
-                    await session.commit()
-
-        await _send_bot_message(telegram_user_id, _ACTIVATION_MESSAGE)
-        log_event(logger, "direct_activation_completed", telegram_user_id=telegram_user_id, payment_id=payment_id)
-        return True
-
+        activated = await activate_with_payment_atomic(payment_id, customer_id, telegram_user_id)
     except Exception as err:
         log_event(logger, "direct_activation_failed", telegram_user_id=telegram_user_id, error=str(err), level=40)
         return False
+
+    if not activated:
+        log_event(logger, "direct_activation_duplicate", payment_id=payment_id)
+        return False
+
+    await _send_bot_message(telegram_user_id, _ACTIVATION_MESSAGE)
+    log_event(logger, "direct_activation_completed", telegram_user_id=telegram_user_id, payment_id=payment_id)
+    return True
 
 
 async def _try_proactive_renewal(
@@ -331,3 +317,117 @@ async def claim_token_page(token: str):
 @app.get("/go/{token}")
 async def go_telegram(token: str):
     return RedirectResponse(url=build_telegram_start_link(token))
+
+
+# ── API Layer — Fase 5 ────────────────────────────────────────────────────────
+#
+# Bot Telegram → adapter → estas rotas → EngineFacade → JourneyEngine → serviços
+#
+# Cada rota aceita {tenant_id, user_id, payload?} e retorna o EngineOutput
+# serializado. Permite multi-canal (WhatsApp, Web, App) sem alterar o engine.
+#
+# Auth: Fase 5 usa X-Engine-Key por tenant (env: ENGINE_API_KEY).
+#       Por enquanto, a rota é interna; adicione auth antes de expor publicamente.
+
+_ENGINE_API_KEY = os.getenv("ENGINE_API_KEY", "")
+
+
+class _EngineRequest(BaseModel):
+    tenant_id: str = "profeta"
+    user_id: str
+    payload: dict[str, Any] = {}
+
+
+def _check_engine_auth(key: Optional[str]) -> None:
+    """Valida X-Engine-Key quando ENGINE_API_KEY está configurada."""
+    if _ENGINE_API_KEY and key != _ENGINE_API_KEY:
+        raise HTTPException(status_code=401, detail="engine_key_invalid")
+
+
+def _engine_response(output) -> JSONResponse:
+    """Serializa EngineOutput para JSONResponse."""
+    return JSONResponse(
+        status_code=200 if output.success else 422,
+        content={
+            "success": output.success,
+            "action": output.action,
+            "data": output.data,
+            "error": output.error,
+        },
+    )
+
+
+@app.post("/api/verse")
+async def api_verse(
+    body: _EngineRequest,
+    x_engine_key: Optional[str] = Header(default=None),
+):
+    """Seleciona um versículo aleatório para o usuário e atualiza o histórico."""
+    _check_engine_auth(x_engine_key)
+    from app.core.contracts import EngineInput
+    from app.core.engine.engine_facade import engine
+    result = await engine.execute(EngineInput(
+        tenant_id=body.tenant_id,
+        user_id=body.user_id,
+        action="verse_select",
+        payload=body.payload,
+    ))
+    log_event(logger, "api_verse", tenant_id=body.tenant_id, user_id=body.user_id, success=result.success)
+    return _engine_response(result)
+
+
+@app.post("/api/explain")
+async def api_explain(
+    body: _EngineRequest,
+    x_engine_key: Optional[str] = Header(default=None),
+):
+    """Gera explicação para o último versículo do usuário."""
+    _check_engine_auth(x_engine_key)
+    from app.core.contracts import EngineInput
+    from app.core.engine.engine_facade import engine
+    result = await engine.execute(EngineInput(
+        tenant_id=body.tenant_id,
+        user_id=body.user_id,
+        action="explanation_get",
+        payload=body.payload,
+    ))
+    log_event(logger, "api_explain", tenant_id=body.tenant_id, user_id=body.user_id, success=result.success)
+    return _engine_response(result)
+
+
+@app.post("/api/continue")
+async def api_continue(
+    body: _EngineRequest,
+    x_engine_key: Optional[str] = Header(default=None),
+):
+    """Avança para o próximo passo na progressão espiritual do usuário."""
+    _check_engine_auth(x_engine_key)
+    from app.core.contracts import EngineInput
+    from app.core.engine.engine_facade import engine
+    result = await engine.execute(EngineInput(
+        tenant_id=body.tenant_id,
+        user_id=body.user_id,
+        action="continue",
+        payload=body.payload,
+    ))
+    log_event(logger, "api_continue", tenant_id=body.tenant_id, user_id=body.user_id, success=result.success)
+    return _engine_response(result)
+
+
+@app.post("/api/prayer")
+async def api_prayer(
+    body: _EngineRequest,
+    x_engine_key: Optional[str] = Header(default=None),
+):
+    """Gera oração a partir do versículo e reflexão atuais do usuário."""
+    _check_engine_auth(x_engine_key)
+    from app.core.contracts import EngineInput
+    from app.core.engine.engine_facade import engine
+    result = await engine.execute(EngineInput(
+        tenant_id=body.tenant_id,
+        user_id=body.user_id,
+        action="prayer_get",
+        payload=body.payload,
+    ))
+    log_event(logger, "api_prayer", tenant_id=body.tenant_id, user_id=body.user_id, success=result.success)
+    return _engine_response(result)
