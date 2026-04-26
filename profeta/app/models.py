@@ -18,6 +18,8 @@ class User(Base):
     last_interaction_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
+    # 👇 ADICIONE ISSO
+    role: Mapped[str] = mapped_column(String(32), default="user")
 
 class UserPreference(Base):
     __tablename__ = "user_preferences"

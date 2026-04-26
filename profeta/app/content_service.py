@@ -129,14 +129,27 @@ def build_default_prayer(verse: dict[str, Any]) -> str:
 
 def _fallback_reflection(verse: dict[str, Any], depth: str) -> ReflectionContent:
     reference = format_verse_reference(verse)
+
     explanation = (
-        f"{reference} nos convida a contemplar esta Palavra com calma, recebendo sua mensagem "
-        "como direção para o dia de hoje."
+        f"{reference} revela uma verdade espiritual importante. "
+        "Mesmo quando não compreendemos todos os detalhes, Deus continua operando "
+        "de forma soberana e fiel na história e em nossas vidas."
     )
-    context = "Leia o texto novamente com atenção e observe o que ele revela sobre o caráter de Deus."
-    application = "Escolha uma atitude prática para viver esta verdade ainda hoje, com simplicidade e constância."
+
+    context = (
+        "Observe o contexto deste versículo dentro da narrativa bíblica. "
+        "Ele aponta para a fidelidade contínua de Deus ao Seu povo."
+    )
+
+    application = (
+        "Hoje, escolha confiar em Deus mesmo sem entender tudo. "
+        "Pratique uma atitude de fé simples e constante."
+    )
+
     prayer = build_default_prayer(verse)
-    summary = f"{explanation} {application}"
+
+    summary = explanation
+
     return ReflectionContent(
         explanation=explanation,
         context=context,
@@ -146,7 +159,6 @@ def _fallback_reflection(verse: dict[str, Any], depth: str) -> ReflectionContent
         depth=depth,
         is_fallback=True,
     )
-
 
 def _build_cached_reflection(verse: dict[str, Any], explanation: str, depth: str) -> ReflectionContent:
     reflection = _fallback_reflection(verse, depth)
@@ -162,36 +174,53 @@ def _build_prompts(verse: dict[str, Any], depth: str, journey_title: Optional[st
     base_ref = f"{verse['book']} {verse['chapter']}:{verse['verse']} - {verse['text']}"
     journey_line = f" O usuário está na trilha espiritual '{journey_title}'." if journey_title else ""
 
+    # 🔥 PROMPT BASE MAIS ROBUSTO (ANTI-QUEBRA)
+    json_instruction = (
+        "Responda EXCLUSIVAMENTE com JSON válido. "
+        "Não inclua nenhum texto antes ou depois. "
+        "Não use markdown. "
+        "Não explique nada fora do JSON. "
+        "Se cometer erro, corrija e retorne JSON válido. "
+        "Formato obrigatório: "
+        '{"explanation": "...", "application": "...", "prayer": "...", "context": "...", "summary": "..."}'
+    )
+
     if depth == "deep":
         system_prompt = (
-            "Você é um guia espiritual cristão de profundidade contemplativa. "
-            "Sempre responda SOMENTE com um objeto JSON válido, sem texto extra, sem markdown. "
-            "O JSON deve conter os campos: explanation, application, prayer, context, summary. "
-            "Use linguagem rica, poética e teologicamente profunda, em português do Brasil. "
-            "Inclua contexto histórico e cultural quando relevante. "
-            "Toque a alma com contemplação genuína. Não invente doutrina. Não use markdown."
+            "Você é um guia espiritual cristão profundo e contemplativo. "
+            "Sua missão é tocar o coração com clareza, beleza e verdade bíblica. "
+            + json_instruction + " "
+            "Use linguagem rica, poética e espiritualmente madura, em português do Brasil. "
+            "Inclua contexto histórico quando relevante. "
+            "Evite generalizações vagas. Seja específico, profundo e fiel à Bíblia."
         )
+
         user_prompt = (
-            "Gere uma reflexão espiritual profunda e contemplativa para o versículo abaixo. "
-            "Responda apenas com um JSON válido com os campos: explanation, application, prayer, context, summary. "
-            "A explanation deve ser rica e contemplativa (mínimo 3 frases). "
+            "Gere uma reflexão espiritual profunda e transformadora baseada no versículo abaixo. "
+            "A explanation deve ser contemplativa, com no mínimo 3 frases bem desenvolvidas. "
+            "A application deve ser prática e direta para o dia a dia. "
+            "A prayer deve ser sincera e conectada ao texto. "
             f"Versículo: {base_ref}{journey_line}"
         )
+
     else:
         system_prompt = (
-            "Você é um assistente espiritual cristão. Sempre responda SOMENTE com um objeto JSON válido, "
-            "sem texto extra, sem markdown, sem explicações fora do JSON. "
-            "O JSON deve conter os campos: explanation, application, prayer, context, summary. "
-            "Seja simples, claro, fiel ao versículo, em português do Brasil. "
-            "Não repita o versículo inteiro. Não invente doutrina. Não use markdown."
+            "Você é um assistente espiritual cristão claro e equilibrado. "
+            "Sua missão é explicar a Palavra de forma compreensível e aplicável. "
+            + json_instruction + " "
+            "Seja direto, fiel ao texto bíblico e espiritualmente relevante. "
+            "Evite linguagem genérica."
         )
+
         user_prompt = (
-            "Gere uma explicação espiritual para o versículo abaixo, respondendo apenas com um JSON válido "
-            f"e parseável, com os campos: explanation, application, prayer, context, summary.\n"
+            "Explique o versículo abaixo de forma clara e prática. "
+            "A explanation deve ser simples, mas significativa. "
+            "A application deve ser objetiva e aplicável hoje. "
+            "A prayer deve ser curta e coerente com o versículo. "
             f"Versículo: {base_ref}{journey_line}"
         )
-    return system_prompt, user_prompt
 
+    return system_prompt, user_prompt
 
 # ── Core generator (private) ──────────────────────────────────────────────────
 
@@ -215,19 +244,22 @@ async def _generate_content(
         client = _get_openai_client()
         system_prompt, user_prompt = _build_prompts(verse, depth, journey_title)
         max_tokens = 800 if depth == "deep" else 512
+
         logger.info(
             "[IA] Gerando %s via OpenAI para %s %s:%s",
             label, verse["book"], verse["chapter"], verse["verse"],
         )
+
         response = client.chat.completions.create(
             model=_cfg.openai_model or OPENAI_EXPLANATION_MODEL,
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
-            max_tokens=max_tokens,
+            max_completion_tokens=max_tokens,  # ✅ já corrigido
             temperature=0.6 if depth == "deep" else 0.5,
         )
+
         return extract_response_text(response)
 
     log_event(
@@ -238,22 +270,37 @@ async def _generate_content(
     )
 
     # ── A: API / operational error (auth, quota, timeout, network) ────────────
-    # These are critical — the service is degraded and ops must be alerted.
-    try:
-        text = await asyncio.to_thread(_run)
-    except Exception as api_err:
-        log_event(
-            logger,
-            "openai_api_error",
-            level=logging.ERROR,
-            verse_reference=format_verse_reference(verse),
-            mode=mode,
-            error_type=type(api_err).__name__,
-            error=str(api_err)[:200],
-        )
-        return _fallback_reflection(verse, depth)
+    # 🔥 CORRIGIDO: agora com retry sem quebrar a estrutura
+    text = None
+    #last_error = None
 
-    logger.info("[IA] Resposta OpenAI (primeiros 200 chars): %s", text[:200] if text else "<vazio>")
+    for attempt in range(2):
+        try:
+            text = await asyncio.to_thread(_run)
+            break
+        except Exception as api_err:
+            last_error = api_err
+
+            log_event(
+                logger,
+                "openai_api_error",
+                level=logging.ERROR if attempt == 1 else logging.WARNING,
+                verse_reference=format_verse_reference(verse),
+                mode=mode,
+                attempt=attempt + 1,
+                error_type=type(api_err).__name__,
+                error=str(api_err)[:200],
+            )
+
+            if attempt == 0:
+                await asyncio.sleep(0.5)
+            else:
+                return _fallback_reflection(verse, depth)
+
+    logger.info(
+        "[IA] Resposta OpenAI (primeiros 200 chars): %s",
+        (text[:200] if isinstance(text, str) else "<vazio>")
+    )
 
     clean_text = _sanitize_openai_text(text or "")
 
@@ -272,7 +319,12 @@ async def _generate_content(
     # ── C: JSON parse error (prompt engineering issue) ────────────────────────
     try:
         payload = json.loads(clean_text)
-        reflection = ReflectionContent.from_dict({**payload, "depth": depth})
+
+        reflection = ReflectionContent.from_dict({
+            **payload,
+            "depth": depth
+        })
+
         log_event(
             logger,
             done_event,
@@ -280,7 +332,9 @@ async def _generate_content(
             journey_title=journey_title or "",
             source="openai",
         )
+
         return reflection
+
     except (json.JSONDecodeError, Exception) as parse_err:
         log_event(
             logger,
@@ -291,8 +345,8 @@ async def _generate_content(
             error_type=type(parse_err).__name__,
             raw_excerpt=clean_text[:100],
         )
-        return _fallback_reflection(verse, depth)
 
+        return _fallback_reflection(verse, depth)
 
 # ── Public generators ─────────────────────────────────────────────────────────
 
@@ -399,7 +453,7 @@ async def _get_or_create_content_locked(
             user = User(telegram_user_id=str(telegram_user_id), status="active")
             session.add(user)
             await session.flush()
-        if not is_fallback:
+        if not is_fallback or depth == "balanced":
             session.add(
                 VerseExplanation(
                     user_id=user.id,
@@ -408,7 +462,7 @@ async def _get_or_create_content_locked(
                     verse=str(verse["verse"]),
                     explanation=reflection.explanation.strip(),
                     source=source,
-                    is_fallback=False,
+                    is_fallback=is_fallback, #is_fallback=False,
                     depth=depth,
                 )
             )
@@ -526,8 +580,7 @@ def build_explanation_audio_text(verse: dict[str, Any], reflection: ReflectionCo
     """
     reference = format_verse_reference(verse)
     if getattr(reflection, "is_fallback", False):
-        logger.warning("[Áudio] Bloqueado: fallback %s", reference)
-        return ""
+        logger.warning("[Áudio] fallback usado, mas áudio permitido")
     raw = (
         f"Explicação sobre {reference}. "
         f"{reflection.explanation} "
@@ -550,8 +603,7 @@ def build_reflection_audio_text(verse: dict[str, Any], reflection: ReflectionCon
     """
     reference = format_verse_reference(verse)
     if getattr(reflection, "is_fallback", False):
-        logger.warning("[Áudio] Bloqueado: fallback %s", reference)
-        return ""
+        logger.warning("[Áudio] fallback usado, mas áudio permitido")
     raw = (
         f"Reflexão sobre {reference}. "
         f"Essência: {reflection.explanation} "

@@ -177,21 +177,39 @@ async def ensure_user_record(update: Update) -> None:
     except Exception:
         logger.exception("Falha ao garantir registro do usuário.")
 
-
 async def require_active_subscription(update: Update) -> bool:
     message = get_message(update)
     user = get_user(update)
     if not user or not message:
         return False
+
     await ensure_user_record(update)
+
     try:
+        # 🔥 NOVO: buscar user completo do banco
+        from app.subscription_service import get_or_create_user
+
+        db_user = await maybe_await(
+            get_or_create_user(
+                telegram_user_id=str(user.id),
+                telegram_username=user.username,
+                full_name=user.full_name,
+            )
+        )
+
+        # 🔥 BYPASS ADMIN
+        if getattr(db_user, "role", "user") in ["admin", "super_admin"]:
+            return True
+
+        # 🔥 REGRA NORMAL
         if await maybe_await(user_has_active_subscription(str(user.id))):
             return True
+
     except Exception:
         logger.exception("Erro ao validar assinatura ativa.")
+
     await message.reply_text(build_subscription_required_message(ASAAS_PAYMENT_LINK_URL))
     return False
-
 
 async def _check_rate_limit(update: Update, command: str, max_calls: int) -> bool:
     user = get_user(update)
