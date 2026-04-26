@@ -1,0 +1,14 @@
+[Unit]
+Description=Profeta Database Backup
+After=network.target
+
+[Service]
+Type=oneshot
+User=profeta
+WorkingDirectory=/opt/profeta
+ExecStart=/opt/profeta/.venv/bin/python -m app.backup
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
