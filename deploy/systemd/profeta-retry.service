@@ -1,0 +1,17 @@
+[Unit]
+Description=Profeta Retry Missing Delivery
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=profeta
+Group=profeta
+WorkingDirectory=/opt/profeta/current
+EnvironmentFile=/opt/profeta/current/.env
+Environment=PYTHONUNBUFFERED=1
+TimeoutStartSec=300
+ExecStart=/bin/bash -lc 'source /opt/profeta/current/.venv/bin/activate; cd /opt/profeta/current; python -m app.jobs --retry-missing'
+
+[Install]
+WantedBy=multi-user.target

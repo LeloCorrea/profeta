@@ -1,0 +1,12 @@
+[Unit]
+Description=Profeta Retry Missing Delivery at 06:05, 06:15 and 06:30 Sao Paulo
+
+[Timer]
+OnCalendar=*-*-* 06:05:00 America/Sao_Paulo
+OnCalendar=*-*-* 06:15:00 America/Sao_Paulo
+OnCalendar=*-*-* 06:30:00 America/Sao_Paulo
+Persistent=false
+Unit=profeta-retry.service
+
+[Install]
+WantedBy=timers.target

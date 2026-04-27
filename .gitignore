@@ -1,0 +1,92 @@
+# ========================
+
+# ENV / SECRETS
+
+# ========================
+
+.env
+.env.*
+!.env.example
+
+# ========================
+
+# PYTHON ENV
+
+# ========================
+
+.venv/
+venv/
+env/
+
+# ========================
+
+# PYTHON CACHE / BUILD
+
+# ========================
+
+**pycache**/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg-info/
+dist/
+build/
+
+# ========================
+
+# DATABASES
+
+# ========================
+
+*.db
+*.sqlite
+*.sqlite3
+*.db-shm
+*.db-wal
+
+# ========================
+
+# RUNTIME DATA
+
+# ========================
+
+data/
+logs/
+*.log
+
+# ========================
+
+# TEST / COVERAGE
+
+# ========================
+
+.pytest_cache/
+.coverage
+htmlcov/
+
+# ========================
+
+# TEMP FILES
+
+# ========================
+
+*.pid
+*.tmp
+*.temp
+*.bak
+*.swp
+*.swo
+~$*
+
+# ========================
+
+# IDE / SYSTEM
+
+# ========================
+
+.vscode/
+.idea/
+*.code-workspace
+.DS_Store
+Thumbs.db
