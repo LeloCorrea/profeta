@@ -46,6 +46,13 @@ async def lifespan(app: FastAPI):
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
+    from app.bible_seed import check_and_seed_bible
+    from app.db import SessionLocal as _SessionLocal
+    try:
+        await check_and_seed_bible(_SessionLocal)
+    except Exception:
+        logger.exception("Falha no bootstrap da Bíblia — sistema continuará com fallback")
+
     from app.core.session.factory import init_session_backend
     await init_session_backend()
 

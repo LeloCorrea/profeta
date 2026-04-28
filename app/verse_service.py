@@ -13,7 +13,8 @@ from app.observability import get_logger, log_event
 
 
 logger = get_logger(__name__)
-BIBLE_PATH = Path("data/bible/bible.json")
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+BIBLE_PATH = _PROJECT_ROOT / "data" / "bible" / "bible.json"
 RECENT_VERSE_BLOCK_SIZE = 30
 
 FALLBACK_VERSE: dict[str, Any] = {
