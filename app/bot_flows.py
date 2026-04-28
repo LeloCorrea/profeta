@@ -111,8 +111,11 @@ async def resolve_last_verse(update: Update, context: ContextTypes.DEFAULT_TYPE)
         if verse:
             remember_last_verse(context, verse)
             return verse
-    except Exception:
-        logger.debug("Falha ao buscar último versículo do DB — usando cache de contexto.")
+    except Exception as e:
+        logger.warning(
+            "Falha ao buscar último versículo do DB — usando cache de contexto. %s: %s",
+            type(e).__name__, e,
+        )
     cached = SessionStore(context).get("last_verse")
     if isinstance(cached, dict):
         return cached
@@ -243,8 +246,10 @@ async def send_verse_flow(
     if not message or not user:
         return
 
-    # Fase 2: registra context.user_data no registry global para acesso pelo engine sem context.
-    register_session(CURRENT_TENANT.tenant_id, str(user.id), context.user_data)
+    try:
+        register_session(CURRENT_TENANT.tenant_id, str(user.id), context.user_data)
+    except Exception as e:
+        logger.warning("Falha ao registrar sessão — continuando sem registry. %s: %s", type(e).__name__, e)
 
     verse = verse or await get_random_verse_for_user(str(user.id))
     if not verse:
@@ -253,9 +258,15 @@ async def send_verse_flow(
 
     active_journey = None
     if FEATURE_JOURNEYS:
-        active_journey = await get_active_journey(SessionLocal, str(user.id))
+        try:
+            active_journey = await get_active_journey(SessionLocal, str(user.id))
+        except Exception as e:
+            logger.warning("Falha ao buscar jornada ativa — continuando sem trilha. %s: %s", type(e).__name__, e)
 
-    await save_verse_history(str(user.id), verse)
+    try:
+        await save_verse_history(str(user.id), verse)
+    except Exception as e:
+        logger.warning("Falha ao salvar histórico do versículo — verso será entregue. %s: %s", type(e).__name__, e)
     remember_last_verse(context, verse)
     image_content_id = cache_image_content(context, "verse", str(verse.get("text", "")))
 
@@ -271,7 +282,10 @@ async def send_verse_flow(
         journey=active_journey.key if active_journey else "",
     )
 
-    await send_verse_audio(message, verse)
+    try:
+        await send_verse_audio(message, verse)
+    except Exception as e:
+        logger.warning("Falha ao gerar/enviar áudio do versículo — verso já entregue. %s: %s", type(e).__name__, e)
 
     try:
         from datetime import date

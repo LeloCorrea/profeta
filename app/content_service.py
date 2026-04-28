@@ -25,6 +25,8 @@ try:
         return _openai_client
 
 except Exception:
+    import logging as _logging
+    _logging.exception("ERROR: failed to import openai package — content generation disabled")
     OpenAI = None
     _openai_client = None
 
@@ -345,6 +347,19 @@ async def _generate_content(
             error_type=type(parse_err).__name__,
             raw_excerpt=clean_text[:100],
         )
+
+        # OpenAI returned plain text (not JSON) — use it directly as explanation
+        if len(clean_text) >= 20:
+            logger.info("[IA] Usando texto simples da IA como explicação (sem JSON)")
+            return ReflectionContent(
+                explanation=clean_text,
+                context="",
+                application="",
+                prayer=build_default_prayer(verse),
+                summary=clean_text[:200],
+                depth=depth,
+                is_fallback=False,
+            )
 
         return _fallback_reflection(verse, depth)
 

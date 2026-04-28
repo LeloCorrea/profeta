@@ -1,4 +1,5 @@
 import json
+import logging
 import random
 from functools import lru_cache
 from pathlib import Path
@@ -15,14 +16,27 @@ logger = get_logger(__name__)
 BIBLE_PATH = Path("data/bible/bible.json")
 RECENT_VERSE_BLOCK_SIZE = 30
 
+FALLBACK_VERSE: dict[str, Any] = {
+    "id": None,
+    "book": "Salmos",
+    "chapter": "23",
+    "verse": "1",
+    "text": "O Senhor é o meu pastor; nada me faltará.",
+}
+
 
 @lru_cache(maxsize=1)
 def load_verses() -> list[dict[str, Any]]:
     if not BIBLE_PATH.exists():
+        logger.error("Bible JSON not found at %s — verse selection will use DB only", BIBLE_PATH)
         return []
 
-    with open(BIBLE_PATH, "r", encoding="utf-8") as file_handle:
-        data = json.load(file_handle)
+    try:
+        with open(BIBLE_PATH, "r", encoding="utf-8") as file_handle:
+            data = json.load(file_handle)
+    except Exception:
+        logging.exception("ERROR: failed to parse bible JSON from %s", BIBLE_PATH)
+        return []
 
     return data if isinstance(data, list) else []
 
@@ -105,9 +119,13 @@ async def get_random_verse_from_db(
     excluded_refs = excluded_refs or set()
     fetch_limit = max(1, len(excluded_refs) + 5)
 
-    async with SessionLocal() as session:
-        stmt = select(Verse).order_by(func.random()).limit(fetch_limit)
-        candidates = [normalize_verse(v) for v in (await session.execute(stmt)).scalars().all()]
+    try:
+        async with SessionLocal() as session:
+            stmt = select(Verse).order_by(func.random()).limit(fetch_limit)
+            candidates = [normalize_verse(v) for v in (await session.execute(stmt)).scalars().all()]
+    except Exception:
+        logging.exception("ERROR: DB query failed in get_random_verse_from_db")
+        return None
 
     if not candidates:
         return None
@@ -133,12 +151,25 @@ def get_random_verse_from_json(
     return verse
 
 
-async def get_random_verse_for_user(telegram_user_id: str) -> Optional[dict[str, Any]]:
-    recent_refs = await get_recent_verse_refs_for_user(telegram_user_id)
-    verse = await get_random_verse_from_db(recent_refs)
-    if verse:
-        return verse
-    return get_random_verse_from_json(recent_refs)
+async def get_random_verse_for_user(telegram_user_id: str) -> dict[str, Any]:
+    recent_refs: set[tuple[str, str, str]] = set()
+    try:
+        recent_refs = await get_recent_verse_refs_for_user(telegram_user_id)
+        verse = await get_random_verse_from_db(recent_refs)
+        if verse:
+            return verse
+    except Exception:
+        logging.exception("ERROR: verse DB lookup failed for user=%s", telegram_user_id)
+
+    try:
+        verse = get_random_verse_from_json(recent_refs)
+        if verse:
+            return verse
+    except Exception:
+        logging.exception("ERROR: verse JSON lookup failed")
+
+    logger.error("All verse sources failed — returning static fallback Salmos 23:1")
+    return FALLBACK_VERSE
 
 
 async def save_verse_history(telegram_user_id: str, verse: dict[str, Any]) -> None:
