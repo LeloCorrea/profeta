@@ -21,6 +21,7 @@ from app.content_service import (
 )
 from app.db import SessionLocal
 from app.journey_service import get_active_journey
+from app.trilha_service import get_trilha_label, get_user_trilha
 from app.observability import get_logger, log_event
 from app.premium_experience import (
     build_explanation_actions_keyboard,
@@ -251,7 +252,14 @@ async def send_verse_flow(
     except Exception as e:
         logger.warning("Falha ao registrar sessão — continuando sem registry. %s: %s", type(e).__name__, e)
 
-    verse = verse or await get_random_verse_for_user(str(user.id))
+    # Obter trilha selecionada pelo usuário para filtrar o versículo.
+    user_trilha = None
+    try:
+        user_trilha = await get_user_trilha(str(user.id))
+    except Exception as e:
+        logger.warning("Falha ao obter trilha — usando aleatório. %s: %s", type(e).__name__, e)
+
+    verse = verse or await get_random_verse_for_user(str(user.id), trilha=user_trilha)
     if not verse:
         await message.reply_text(build_verse_unavailable_message())
         return
@@ -263,6 +271,13 @@ async def send_verse_flow(
         except Exception as e:
             logger.warning("Falha ao buscar jornada ativa — continuando sem trilha. %s: %s", type(e).__name__, e)
 
+    # Título de exibição: jornada ativa tem precedência; senão usa trilha selecionada.
+    display_title = None
+    if active_journey:
+        display_title = active_journey.title
+    elif user_trilha:
+        display_title = get_trilha_label(user_trilha)
+
     try:
         await save_verse_history(str(user.id), verse)
     except Exception as e:
@@ -271,7 +286,7 @@ async def send_verse_flow(
     image_content_id = cache_image_content(context, "verse", str(verse.get("text", "")))
 
     await message.reply_text(
-        format_verse_text(verse, active_journey.title if active_journey else None),
+        format_verse_text(verse, display_title),
         reply_markup=build_verse_actions_keyboard(image_content_id=image_content_id),
     )
     log_event(
@@ -280,6 +295,7 @@ async def send_verse_flow(
         telegram_user_id=user.id,
         verse_reference=format_verse_reference(verse),
         journey=active_journey.key if active_journey else "",
+        trilha=user_trilha or "",
     )
 
     try:

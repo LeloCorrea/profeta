@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import random
@@ -114,6 +115,40 @@ async def get_recent_verse_refs_for_user(
     return {history_ref_tuple(item) for item in items}
 
 
+async def get_random_verse_from_db_by_trilha(
+    trilha: str,
+    excluded_refs: Optional[set[tuple[str, str, str]]] = None,
+) -> Optional[dict[str, Any]]:
+    """Seleciona versículo aleatório filtrado pela trilha. Retorna None se não houver classificados."""
+    excluded_refs = excluded_refs or set()
+    fetch_limit = max(5, len(excluded_refs) + 5)
+    try:
+        async with SessionLocal() as session:
+            stmt = (
+                select(Verse)
+                .where(Verse.trilha == trilha)
+                .order_by(func.random())
+                .limit(fetch_limit)
+            )
+            candidates = [normalize_verse(v) for v in (await session.execute(stmt)).scalars().all()]
+    except Exception:
+        logging.exception("ERROR: DB query failed in get_random_verse_from_db_by_trilha")
+        return None
+
+    if not candidates:
+        return None
+
+    available = [v for v in candidates if verse_ref_tuple(v) not in excluded_refs]
+    verse = available[0] if available else candidates[0]
+    log_event(
+        logger,
+        "verse_selected_from_db_by_trilha",
+        verse_reference=format_verse_reference(verse),
+        trilha=trilha,
+    )
+    return verse
+
+
 async def get_random_verse_from_db(
     excluded_refs: Optional[set[tuple[str, str, str]]] = None,
 ) -> Optional[dict[str, Any]]:
@@ -152,12 +187,38 @@ def get_random_verse_from_json(
     return verse
 
 
-async def get_random_verse_for_user(telegram_user_id: str) -> dict[str, Any]:
+async def get_random_verse_for_user(
+    telegram_user_id: str,
+    trilha: Optional[str] = None,
+) -> dict[str, Any]:
     recent_refs: set[tuple[str, str, str]] = set()
     try:
         recent_refs = await get_recent_verse_refs_for_user(telegram_user_id)
+
+        if trilha:
+            verse = await get_random_verse_from_db_by_trilha(trilha, recent_refs)
+            if verse:
+                return verse
+            # Trilha sem versículos classificados: dispara classificação em background e usa aleatório.
+            log_event(
+                logger,
+                "trilha_no_classified_verses",
+                trilha=trilha,
+                telegram_user_id=telegram_user_id,
+            )
+
         verse = await get_random_verse_from_db(recent_refs)
         if verse:
+            if trilha and verse.get("id"):
+                # Classifica o versículo em background sem bloquear a entrega.
+                from app.verse_classifier import classify_and_save_verse
+                asyncio.ensure_future(
+                    classify_and_save_verse(
+                        verse["id"],
+                        verse["text"],
+                        format_verse_reference(verse),
+                    )
+                )
             return verse
     except Exception:
         logging.exception("ERROR: verse DB lookup failed for user=%s", telegram_user_id)

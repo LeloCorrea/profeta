@@ -4,7 +4,7 @@ import os
 import sys
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from typing import IO, Optional
+from typing import IO, Optional  # noqa: F401 (Optional used in _send_verse_with_retry)
 
 from sqlalchemy import func, select
 from telegram import Bot
@@ -466,9 +466,20 @@ async def main() -> None:
 async def _send_verse_with_retry(user_id: str, bot: Bot, logger: logging.Logger, max_attempts: int = 3) -> tuple[bool, bool]:
     """Returns (message_success, audio_failed)."""
     audio_failed = False
+
+    # Obter trilha selecionada uma única vez antes do loop de tentativas.
+    user_trilha: Optional[str] = None
+    trilha_display: Optional[str] = None
+    try:
+        from app.trilha_service import get_user_trilha, get_trilha_label
+        user_trilha = await get_user_trilha(user_id)
+        trilha_display = get_trilha_label(user_trilha) if user_trilha else None
+    except Exception as trilha_err:
+        logger.warning(f"[Trilha] Falha ao obter trilha para {user_id}: {trilha_err}")
+
     for attempt in range(max_attempts):
         try:
-            verse = await get_random_verse_for_user(user_id)
+            verse = await get_random_verse_for_user(user_id, trilha=user_trilha)
             if not verse:
                 logger.error(f"Nenhum versículo disponível para {user_id}")
                 return False, False
@@ -498,7 +509,7 @@ async def _send_verse_with_retry(user_id: str, bot: Bot, logger: logging.Logger,
 
             await bot.send_message(
                 chat_id=user_id,
-                text=format_verse_text(verse),
+                text=format_verse_text(verse, trilha_display),
                 reply_markup=keyboard,
             )
             if audio_asset is not None:

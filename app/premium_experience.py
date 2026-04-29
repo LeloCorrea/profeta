@@ -7,6 +7,8 @@ _IMAGE_BUTTON_LABEL = "🎨 Criar imagem (1 crédito)"
 from app.tenant_config import TenantBranding, TenantConfig
 
 
+TRILHA_SELECT_PREFIX = "trilha:select:"
+
 ACTION_EXPLAIN = "action:explain"
 ACTION_HEAR_VERSE = "action:hear_verse"
 ACTION_PRAY = "action:pray"
@@ -25,6 +27,24 @@ BUY_CREDITS_ACTION_PREFIX = "action:buy_credits|"
 
 def _action_button(label: str, action: str) -> InlineKeyboardButton:
     return InlineKeyboardButton(label, callback_data=action)
+
+
+def build_start_keyboard() -> InlineKeyboardMarkup:
+    """Teclado exibido junto com a mensagem de boas-vindas do /start."""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🛤️ Ver trilhas", callback_data=ACTION_SHOW_JOURNEYS)],
+    ])
+
+
+def build_trilha_keyboard(
+    trilhas: list[tuple[str, str]],
+) -> InlineKeyboardMarkup:
+    """Teclado de seleção de trilha. Cada item é (chave, label)."""
+    rows = [
+        [InlineKeyboardButton(label, callback_data=f"{TRILHA_SELECT_PREFIX}{key}")]
+        for key, label in trilhas
+    ]
+    return InlineKeyboardMarkup(rows)
 
 
 def build_welcome_message(cfg: Optional[TenantConfig] = None) -> str:
@@ -57,6 +77,7 @@ def build_help_message() -> str:
         "/favoritar - salvar o último versículo\n"
         "/favoritos - revisar seus versículos favoritos\n"
         "/trilhas - conhecer jornadas espirituais disponíveis\n"
+        "/evolucao - ver seu progresso na Bíblia\n"
         "/continuar - retomar sua jornada atual\n"
         "/buscar - buscar versículos por tema\n"
         "/meuplano - ver status da sua assinatura\n"
@@ -166,6 +187,59 @@ def build_favorites_empty_message() -> str:
 def build_favorites_message(items: list[str]) -> str:
     rendered = "\n".join(f"• {item}" for item in items)
     return f"⭐ Seus favoritos mais recentes\n\n{rendered}"
+
+
+def build_evolucao_message(evolution: dict) -> str:
+    total: int = evolution.get("total_read", 0)
+    trilhas: dict = evolution.get("trilhas", {})
+    selected_trilha: Optional[str] = evolution.get("selected_trilha")
+    selected_trilha_label: Optional[str] = evolution.get("selected_trilha_label")
+    streak: int = evolution.get("streak", 0)
+    level: dict = evolution.get("level", {})
+    motivational: str = evolution.get("motivational", "✨ Cada versículo que você lê transforma sua vida.")
+
+    if total == 0:
+        return (
+            "📊 Sua jornada começa agora\n\n"
+            "Você ainda não recebeu nenhum versículo.\n\n"
+            "Use /versiculo para dar o primeiro passo.\n\n"
+            "Cada palavra transforma."
+        )
+
+    plural = "s" if total != 1 else ""
+    lines = [
+        "📊 Sua jornada até aqui",
+        "",
+        f"Você já recebeu {total} versículo{plural} 📖",
+    ]
+
+    if selected_trilha and selected_trilha_label:
+        trilha_data = trilhas.get(selected_trilha, {})
+        pct = trilha_data.get("percent", 0.0)
+        pct_str = f"{pct:.1f}".replace(".", ",")
+        lines.append("")
+        lines.append(f"🌿 Sua trilha atual: {selected_trilha_label}")
+        lines.append(f"Progresso: {pct_str}%")
+
+    if streak > 0:
+        lines.append("")
+        dias_label = "dia" if streak == 1 else "dias"
+        lines.append(f"🔥 Sequência atual: {streak} {dias_label}")
+
+    level_name = level.get("name", "")
+    next_name = level.get("next_name")
+    remaining = level.get("remaining")
+    if level_name:
+        lines.append("")
+        lines.append(f"🏆 Nível: {level_name}")
+        if next_name and remaining is not None:
+            lines.append(f"Faltam {remaining} versículos para {next_name}")
+
+    lines.append("")
+    lines.append(motivational)
+    lines.append("")
+    lines.append("Continue sua jornada com /versiculo")
+    return "\n".join(lines)
 
 
 def build_verse_actions_keyboard(

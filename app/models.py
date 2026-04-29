@@ -18,8 +18,8 @@ class User(Base):
     last_interaction_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
-    # 👇 ADICIONE ISSO
     role: Mapped[str] = mapped_column(String(32), default="user")
+    selected_trilha: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
 
 class UserPreference(Base):
     __tablename__ = "user_preferences"
@@ -127,6 +127,12 @@ class Verse(Base):
     text: Mapped[str] = mapped_column(Text)
 
     reference: Mapped[str] = mapped_column(String(128), unique=True, index=True)
+
+    trilha: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
+    tags: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    confidence: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    classified_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    classified_by: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 

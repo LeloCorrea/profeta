@@ -1,5 +1,7 @@
+import asyncio
 import inspect
 import logging
+from datetime import datetime, timedelta
 from typing import Any, Optional
 
 from telegram import Update
@@ -52,6 +54,13 @@ from app.journey_service import (
     start_journey,
 )
 from app.observability import get_logger, log_event
+from app.trilha_service import (
+    TRILHA_RANDOM,
+    get_trilha_label,
+    get_user_trilha,
+    list_trilhas,
+    set_user_trilha,
+)
 from app.premium_experience import (
     ACTION_CONTINUE_JOURNEY,
     ACTION_EXPLAIN,
@@ -66,6 +75,9 @@ from app.premium_experience import (
     CONFIRM_IMAGE_ACTION_PREFIX,
     CREATE_IMAGE_ACTION_PREFIX,
     JOURNEY_ACTION_PREFIX,
+    TRILHA_SELECT_PREFIX,
+    build_start_keyboard,
+    build_trilha_keyboard,
     build_activation_error_message,
     build_activation_success_message,
     build_admin_credits_message,
@@ -95,6 +107,7 @@ from app.premium_experience import (
     build_verse_actions_keyboard,
     build_verse_unavailable_message,
     build_welcome_message,
+    build_evolucao_message,
 )
 from app.rate_limiter import check_rate_limit
 from app.credit_service import consume_credit, get_admin_credits, get_credits, refund_credit
@@ -122,6 +135,7 @@ from app.verse_service import (
     get_last_verse_for_user,
     search_verses_by_keyword,
 )
+from app.evolution_service import get_user_evolution
 
 
 logger = get_logger(__name__)
@@ -231,7 +245,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             await message.reply_text(build_activation_error_message())
             return
 
-    await message.reply_text(build_welcome_message())
+    await message.reply_text(build_welcome_message(), reply_markup=build_start_keyboard())
 
 
 async def ajuda(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -387,15 +401,42 @@ async def favoritos(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def trilhas(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     message = get_message(update)
     user = get_user(update)
-    if not message or not FEATURE_JOURNEYS:
+    if not message:
         return
-    active = None
+
+    current_trilha: Optional[str] = None
     if user:
-        active = await get_active_journey(SessionLocal, str(user.id))
+        try:
+            current_trilha = await get_user_trilha(str(user.id))
+        except Exception:
+            logger.warning("Falha ao obter trilha do usuário | user=%s", user.id if user else "?")
+
+    trilha_label = get_trilha_label(current_trilha)
+    active_line = f"Trilha ativa: *{trilha_label}*\n\n" if trilha_label else ""
+
     await message.reply_text(
-        build_journey_catalog_message(active.title if active else None),
-        reply_markup=build_journey_keyboard(list(JOURNEYS.values())),
+        f"🛤️ *Trilhas do Profeta*\n\n"
+        f"{active_line}"
+        "Escolha uma trilha para receber versículos com tema específico:\n\n"
+        "_Selecione ✨ Aleatório para voltar ao modo livre._",
+        parse_mode="Markdown",
+        reply_markup=build_trilha_keyboard(list_trilhas()),
     )
+
+
+async def evolucao(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    message = get_message(update)
+    user = get_user(update)
+    if not message or not user:
+        return
+    await message.chat.send_action(ChatAction.TYPING)
+    try:
+        data = await get_user_evolution(str(user.id))
+        await message.reply_text(build_evolucao_message(data))
+        log_event(logger, "evolucao_sent", telegram_user_id=str(user.id), total_read=data.get("total_read", 0))
+    except Exception:
+        logger.exception("Falha ao gerar evolução do usuário.")
+        await message.reply_text("Não consegui calcular sua evolução agora. Tente em instantes.")
 
 
 async def _continuar_legacy(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -757,6 +798,33 @@ async def handle_interactive_action(update: Update, context: ContextTypes.DEFAUL
         return
 
     await query.answer()
+
+    if data.startswith(TRILHA_SELECT_PREFIX):
+        trilha_key = data[len(TRILHA_SELECT_PREFIX):]
+        if user:
+            try:
+                await set_user_trilha(str(user.id), trilha_key)
+            except Exception:
+                logger.exception("Falha ao salvar trilha | user=%s", user.id)
+            message = get_message(update)
+            if message:
+                trilha_label = get_trilha_label(trilha_key)
+                if trilha_label:
+                    await message.reply_text(
+                        f"✅ Trilha *{trilha_label}* ativada\\!\n\n"
+                        "Seus próximos versículos serão filtrados por esse tema\\.\n\n"
+                        "Use /versiculo para receber a Palavra da sua trilha\\.",
+                        parse_mode="MarkdownV2",
+                    )
+                else:
+                    await message.reply_text(
+                        "✅ Modo *Aleatório* ativado\\!\n\n"
+                        "Seus versículos serão escolhidos livremente entre toda a Bíblia\\.\n\n"
+                        "Use /versiculo para receber a Palavra do dia\\.",
+                        parse_mode="MarkdownV2",
+                    )
+        return
+
     if data.startswith(BUY_CREDITS_ACTION_PREFIX):
         rest = data[len(BUY_CREDITS_ACTION_PREFIX):]
         try:
@@ -818,6 +886,41 @@ async def handle_interactive_action(update: Update, context: ContextTypes.DEFAUL
             )
 
 
+async def _daily_verse_scheduler() -> None:
+    """Dispara o job diário às DAILY_SEND_HOUR (horário de São Paulo) todos os dias."""
+    from app.config import DAILY_SEND_HOUR
+    try:
+        from zoneinfo import ZoneInfo
+        _tz = ZoneInfo("America/Sao_Paulo")
+    except Exception:
+        _tz = None  # type: ignore[assignment]
+
+    log_event(logger, "daily_scheduler_started", send_hour=DAILY_SEND_HOUR)
+    while True:
+        now = datetime.now(_tz) if _tz else datetime.utcnow()
+        today_target = now.replace(hour=DAILY_SEND_HOUR, minute=0, second=0, microsecond=0)
+        if now < today_target:
+            delay = (today_target - now).total_seconds()
+        else:
+            delay = (today_target + timedelta(days=1) - now).total_seconds()
+
+        logger.info("[Agendador] Próximo job diário em %.0fs (às %02dh SP)", delay, DAILY_SEND_HOUR)
+        await asyncio.sleep(delay)
+
+        logger.info("[Agendador] Disparando job diário às %02dh...", DAILY_SEND_HOUR)
+        try:
+            from app.jobs import main as _jobs_main
+            await _jobs_main()
+        except Exception:
+            logger.exception("[Agendador] Falha no job diário — tentativa novamente amanhã.")
+
+
+async def _post_init_scheduler(application) -> None:
+    """Hook de pós-inicialização: inicia o agendador de versículos diários."""
+    asyncio.create_task(_daily_verse_scheduler())
+    log_event(logger, "daily_scheduler_registered", source="bot_post_init")
+
+
 async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     error = context.error
     if isinstance(error, Conflict):
@@ -849,7 +952,12 @@ def main() -> None:
     asyncio.get_event_loop().run_until_complete(_init_services())
 
     log_event(logger, "bot_starting", app_name=APP_NAME, env=ENV, bot_username=BOT_USERNAME)
-    application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+    application = (
+        Application.builder()
+        .token(TELEGRAM_BOT_TOKEN)
+        .post_init(_post_init_scheduler)
+        .build()
+    )
 
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("ajuda", ajuda))
@@ -863,10 +971,11 @@ def main() -> None:
     application.add_handler(CommandHandler("favoritar", favoritar))
     application.add_handler(CommandHandler("favoritos", favoritos))
     application.add_handler(CommandHandler("trilhas", trilhas))
+    application.add_handler(CommandHandler("evolucao", evolucao))
     application.add_handler(CommandHandler("continuar", continuar))
     application.add_handler(CommandHandler("buscar", buscar))
     application.add_handler(CommandHandler("admin", admin))
-    application.add_handler(CallbackQueryHandler(handle_interactive_action, pattern=r"^(action:|journey:).*"))
+    application.add_handler(CallbackQueryHandler(handle_interactive_action, pattern=r"^(action:|journey:|trilha:).*"))
     application.add_error_handler(on_error)
 
     log_event(logger, "bot_started", bot_username=BOT_USERNAME)
