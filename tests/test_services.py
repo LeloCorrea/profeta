@@ -133,7 +133,7 @@ async def test_content_service_falls_back_for_invalid_json(monkeypatch, sample_v
         choices = [FakeChoice()]
 
     class FakeCompletions:
-        def create(self, model, messages, max_tokens=None, temperature=None):
+        def create(self, model, messages, max_completion_tokens=None, temperature=None, **kwargs):
             return FakeCompletionsResponse()
 
     class FakeChat:

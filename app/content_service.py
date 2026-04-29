@@ -258,7 +258,7 @@ async def _generate_content(
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
-            max_tokens=max_tokens,
+            max_completion_tokens=max_tokens,
             temperature=0.6 if depth == "deep" else 0.5,
         )
 
