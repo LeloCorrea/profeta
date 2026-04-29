@@ -98,15 +98,12 @@ def _sanitize_openai_text(text: str) -> str:
 
 def extract_response_text(response: Any) -> str:
     try:
-        if hasattr(response, "choices") and response.choices:
-            content = getattr(response.choices[0], "message", None)
-            if content and hasattr(content, "content"):
-                return str(content.content).strip()
-            if hasattr(response.choices[0], "content"):
-                return str(response.choices[0].content).strip()
+        # Responses API: output_text shorthand
         text = getattr(response, "output_text", None)
         if text:
             return str(text).strip()
+
+        # Responses API: output[].content[].text
         output = getattr(response, "output", None) or []
         parts: list[str] = []
         for item in output:
@@ -115,9 +112,20 @@ def extract_response_text(response: Any) -> str:
                 value = getattr(block, "text", None)
                 if value:
                     parts.append(str(value))
-        return "\n".join(parts).strip()
+        if parts:
+            return "\n".join(parts).strip()
+
+        # Fallback: chat.completions legacy shape
+        if hasattr(response, "choices") and response.choices:
+            msg = getattr(response.choices[0], "message", None)
+            if msg and hasattr(msg, "content"):
+                return str(msg.content).strip()
+            if hasattr(response.choices[0], "content"):
+                return str(response.choices[0].content).strip()
+
+        return ""
     except Exception as e:
-        logger.error(f"[IA] Erro ao extrair texto da resposta OpenAI: {e}")
+        logger.error("[IA] Erro ao extrair texto da resposta OpenAI: %s", e)
         return ""
 
 
@@ -252,13 +260,19 @@ async def _generate_content(
             label, verse["book"], verse["chapter"], verse["verse"],
         )
 
-        response = client.chat.completions.create(
+        response = client.responses.create(
             model=_cfg.openai_model or OPENAI_EXPLANATION_MODEL,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
+            input=[
+                {
+                    "role": "system",
+                    "content": [{"type": "text", "text": system_prompt}],
+                },
+                {
+                    "role": "user",
+                    "content": [{"type": "text", "text": user_prompt}],
+                },
             ],
-            max_completion_tokens=max_tokens,
+            max_output_tokens=max_tokens,
             temperature=0.6 if depth == "deep" else 0.5,
         )
 
